@@ -58,7 +58,8 @@ describe("RestartPage", () => {
   })
 
   test("shows safe failure state when pairing API and manifest are unavailable", async () => {
-    globalThis.fetch = (() => Promise.resolve(new Response("unavailable", { status: 503 }))) as typeof fetch
+    globalThis.fetch = ((_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response("unavailable", { status: 503 }))) as typeof fetch
 
     await expect(createPairing()).rejects.toThrow("pairing unavailable")
     await expect(loadManifest()).rejects.toThrow("manifest unavailable")
