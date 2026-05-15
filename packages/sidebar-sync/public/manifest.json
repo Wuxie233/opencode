@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "OpenCode Sidebar Sync",
+  "version": "0.0.0",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://opencode.wuxie233.com/*",
+    "https://app.opencode.ai/*",
+    "https://*.dev.opencode.ai/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://opencode.wuxie233.com/*",
+        "https://app.opencode.ai/*",
+        "https://*.dev.opencode.ai/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "OpenCode Sidebar Sync"
+  }
+}
