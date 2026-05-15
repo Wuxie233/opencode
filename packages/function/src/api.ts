@@ -12,6 +12,108 @@ type Env = {
   WEB_DOMAIN: string
 }
 
+type SidebarProjectState = {
+  readonly worktree: string
+  readonly expanded: boolean
+}
+
+type SidebarStatePayload = {
+  readonly schemaVersion: 1
+  readonly projects: readonly SidebarProjectState[]
+  readonly lastProject?: string
+}
+
+type SidebarStateEnvelope = {
+  readonly namespace: string
+  readonly scope: string
+  readonly version: number
+  readonly updatedAt: string
+  readonly updatedByDeviceId: string
+  readonly payload: SidebarStatePayload
+}
+
+type SidebarTokenRecord = {
+  readonly deviceId: string
+  readonly namespace: string
+}
+
+const SIDEBAR_SYNC_DO_NAME = "sidebar-sync"
+const SIDEBAR_PAIRING_TTL_MS = 10 * 60 * 1000
+const sidebarForbiddenKeys = new Set([
+  "password",
+  "token",
+  "credentials",
+  "server.list",
+  "list",
+  "session",
+  "prompt",
+  "model",
+  "authorization",
+  "auth",
+  "secret",
+  "provider_auth",
+  "apiKey",
+  "api_key",
+  "provider",
+])
+
+function sidebarValidationError(fields: Record<string, string>) {
+  return { error: "ValidationError", fields }
+}
+
+function parseSidebarRequestBody(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined
+}
+
+function containsSidebarForbiddenKey(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false
+  if (Array.isArray(value)) return value.some((item) => containsSidebarForbiddenKey(item))
+  return Object.entries(value).some(
+    ([key, nested]) => sidebarForbiddenKeys.has(key) || containsSidebarForbiddenKey(nested),
+  )
+}
+
+function validateSidebarRequestFields(body: Record<string, unknown>, allowedKeys: readonly string[]) {
+  if (Object.keys(body).some((key) => sidebarForbiddenKeys.has(key))) return "body contains forbidden field"
+  if (Object.keys(body).some((key) => !allowedKeys.includes(key))) return "body contains unsupported field"
+  return undefined
+}
+
+function validateSidebarPayload(value: unknown) {
+  if (containsSidebarForbiddenKey(value)) return "payload contains forbidden field"
+  const payload = parseSidebarRequestBody(value)
+  if (!payload) return "payload must be an object"
+  if (payload.schemaVersion !== 1) return "schemaVersion must be 1"
+  if (!Array.isArray(payload.projects)) return "projects must be an array"
+  const invalidProject = payload.projects.find((project) => {
+    const parsed = parseSidebarRequestBody(project)
+    if (!parsed) return true
+    return (
+      Object.keys(parsed).some((key) => key !== "worktree" && key !== "expanded") ||
+      typeof parsed.worktree !== "string" ||
+      typeof parsed.expanded !== "boolean"
+    )
+  })
+  if (invalidProject) return "projects must contain only worktree and expanded"
+  if (payload.lastProject !== undefined && typeof payload.lastProject !== "string") return "lastProject must be a string"
+  if (Object.keys(payload).some((key) => key !== "schemaVersion" && key !== "projects" && key !== "lastProject"))
+    return "payload contains unsupported field"
+  return undefined
+}
+
+function isValidSidebarPathParam(value: string) {
+  return value.length > 0 && value.length <= 128 && /^[A-Za-z0-9._:-]+$/.test(value)
+}
+
+async function getSidebarAuth(c: { req: { header: (name: string) => string | undefined }; env: Env }, namespace: string) {
+  const auth = c.req.header("Authorization")?.match(/^Bearer (.+)$/)
+  if (!auth) return undefined
+  const stub = c.env.SYNC_SERVER.get(c.env.SYNC_SERVER.idFromName(SIDEBAR_SYNC_DO_NAME))
+  const token = await stub.authorizeSidebarToken(auth[1])
+  if (!token || token.namespace !== namespace) return undefined
+  return token
+}
+
 export class SyncServer extends DurableObject<Env> {
   // oxlint-disable-next-line no-useless-constructor
   constructor(ctx: DurableObjectState, env: Env) {
@@ -83,6 +185,56 @@ export class SyncServer extends DurableObject<Env> {
       .map(([key, content]) => ({ key, content }))
   }
 
+  public async createSidebarPairing() {
+    const code = randomUUID().replaceAll("-", "").slice(0, 8)
+    const expiresAt = new Date(Date.now() + SIDEBAR_PAIRING_TTL_MS).toISOString()
+    await this.ctx.storage.put(`sidebar/pairing/${code}`, {
+      expiresAt,
+      namespace: randomUUID(),
+    })
+    return { code, expiresAt }
+  }
+
+  public async claimSidebarPairing(code: string) {
+    const pairing = await this.ctx.storage.get<{ expiresAt: string; namespace: string }>(`sidebar/pairing/${code}`)
+    if (!pairing) return undefined
+    if (Date.parse(pairing.expiresAt) <= Date.now()) return "expired" as const
+    await this.ctx.storage.delete(`sidebar/pairing/${code}`)
+    const deviceId = randomUUID()
+    const token = `${pairing.namespace}.${randomUUID()}`
+    await this.ctx.storage.put(`sidebar/token/${token}`, { deviceId, namespace: pairing.namespace })
+    return { deviceId, token }
+  }
+
+  public async authorizeSidebarToken(token: string) {
+    return this.ctx.storage.get<SidebarTokenRecord>(`sidebar/token/${token}`)
+  }
+
+  public async getSidebarState(namespace: string, scope: string) {
+    return this.ctx.storage.get<SidebarStateEnvelope>(`sidebar/state/${namespace}/${scope}`)
+  }
+
+  public async putSidebarState(
+    namespace: string,
+    scope: string,
+    baseVersion: number,
+    payload: SidebarStatePayload,
+    deviceId: string,
+  ) {
+    const current = await this.getSidebarState(namespace, scope)
+    if (current && current.version !== baseVersion) return { conflict: current }
+    const state = {
+      namespace,
+      scope,
+      version: current ? current.version + 1 : 1,
+      updatedAt: new Date().toISOString(),
+      updatedByDeviceId: deviceId,
+      payload,
+    }
+    await this.ctx.storage.put(`sidebar/state/${namespace}/${scope}`, state)
+    return { state }
+  }
+
   public async assertSecret(secret: string) {
     if (secret !== (await this.getSecret())) throw new Error("Invalid secret")
   }
@@ -115,6 +267,68 @@ export class SyncServer extends DurableObject<Env> {
 
 export default new Hono<{ Bindings: Env }>()
   .get("/", (c) => c.text("Hello, world!"))
+  .post("/sidebar-sync/pairing", async (c) => {
+    const body = parseSidebarRequestBody(await c.req.json().catch(() => ({})))
+    if (!body) return c.json(sidebarValidationError({ body: "body must be an object" }), { status: 400 })
+    const requestError = validateSidebarRequestFields(body, ["label"])
+    if (requestError) return c.json(sidebarValidationError({ body: requestError }), { status: 400 })
+    if (body.label !== undefined && typeof body.label !== "string")
+      return c.json(sidebarValidationError({ label: "label must be a string" }), { status: 400 })
+    const stub = c.env.SYNC_SERVER.get(c.env.SYNC_SERVER.idFromName(SIDEBAR_SYNC_DO_NAME))
+    return c.json(await stub.createSidebarPairing())
+  })
+  .post("/sidebar-sync/pairing/:code/claim", async (c) => {
+    const code = c.req.param("code")
+    const body = parseSidebarRequestBody(await c.req.json().catch(() => ({})))
+    if (!body) return c.json(sidebarValidationError({ body: "body must be an object" }), { status: 400 })
+    const requestError = validateSidebarRequestFields(body, ["deviceName"])
+    if (requestError) return c.json(sidebarValidationError({ body: requestError }), { status: 400 })
+    if (body.deviceName !== undefined && typeof body.deviceName !== "string")
+      return c.json(sidebarValidationError({ deviceName: "deviceName must be a string" }), { status: 400 })
+    const stub = c.env.SYNC_SERVER.get(c.env.SYNC_SERVER.idFromName(SIDEBAR_SYNC_DO_NAME))
+    const claimed = await stub.claimSidebarPairing(code)
+    if (!claimed) return c.json({ error: "NotFound", resource: "pairing" }, { status: 404 })
+    if (claimed === "expired") return c.json({ error: "PairingExpired" }, { status: 409 })
+    return c.json(claimed)
+  })
+  .get("/sidebar-sync/state/:namespace/:scope", async (c) => {
+    const namespace = c.req.param("namespace")
+    const scope = c.req.param("scope")
+    if (!isValidSidebarPathParam(namespace) || !isValidSidebarPathParam(scope))
+      return c.json(sidebarValidationError({ path: "namespace and scope must be valid" }), { status: 400 })
+    const auth = await getSidebarAuth(c, namespace)
+    if (!auth) return c.json({ error: "Unauthorized" }, { status: 401 })
+    const stub = c.env.SYNC_SERVER.get(c.env.SYNC_SERVER.idFromName(SIDEBAR_SYNC_DO_NAME))
+    const state = await stub.getSidebarState(namespace, scope)
+    if (!state) return c.body(null, 204)
+    return c.json(state)
+  })
+  .put("/sidebar-sync/state/:namespace/:scope", async (c) => {
+    const namespace = c.req.param("namespace")
+    const scope = c.req.param("scope")
+    if (!isValidSidebarPathParam(namespace) || !isValidSidebarPathParam(scope))
+      return c.json(sidebarValidationError({ path: "namespace and scope must be valid" }), { status: 400 })
+    const auth = await getSidebarAuth(c, namespace)
+    if (!auth) return c.json({ error: "Unauthorized" }, { status: 401 })
+    const body = parseSidebarRequestBody(await c.req.json().catch(() => undefined))
+    if (!body) return c.json(sidebarValidationError({ body: "body must be an object" }), { status: 400 })
+    const requestError = validateSidebarRequestFields(body, ["baseVersion", "payload"])
+    if (requestError) return c.json(sidebarValidationError({ body: requestError }), { status: 400 })
+    if (typeof body.baseVersion !== "number" || !Number.isInteger(body.baseVersion) || body.baseVersion < 0)
+      return c.json(sidebarValidationError({ baseVersion: "baseVersion must be a non-negative integer" }), { status: 400 })
+    const payloadError = validateSidebarPayload(body.payload)
+    if (payloadError) return c.json(sidebarValidationError({ payload: payloadError }), { status: 400 })
+    const stub = c.env.SYNC_SERVER.get(c.env.SYNC_SERVER.idFromName(SIDEBAR_SYNC_DO_NAME))
+    const result = await stub.putSidebarState(
+      namespace,
+      scope,
+      body.baseVersion,
+      body.payload as SidebarStatePayload,
+      auth.deviceId,
+    )
+    if (result.conflict) return c.json({ error: "VersionConflict", current: result.conflict }, { status: 409 })
+    return c.json(result.state)
+  })
   .post("/share_create", async (c) => {
     const body = await c.req.json<{ sessionID: string }>()
     const sessionID = body.sessionID
