@@ -347,6 +347,39 @@ it.live("loop exits immediately when last assistant has stop finish", () =>
   ),
 )
 
+it.live("loop replies to latest user when supplied message ID sorts before prior assistant", () =>
+  provideTmpdirServer(
+    Effect.fnUntraced(function* ({ llm }) {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+      const old = yield* seed(chat.id, { finish: "stop" })
+      const id = MessageID.ascending("msg_00000000000000000000000000")
+      expect(id < old.assistant.id).toBe(true)
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        messageID: id,
+        agent: "build",
+        model: ref,
+        noReply: true,
+        parts: [{ type: "text", text: "newer" }],
+      })
+      yield* llm.text("newer reply")
+
+      const result = yield* prompt.loop({ sessionID: chat.id })
+      expect(yield* llm.calls).toBe(1)
+      expect(result.info.role).toBe("assistant")
+      if (result.info.role === "assistant") {
+        expect(result.info.id).not.toBe(old.assistant.id)
+        expect(result.info.parentID).toBe(id)
+      }
+      expect(result.parts.some((part) => part.type === "text" && part.text === "newer reply")).toBe(true)
+    }),
+    { git: true, config: providerCfg },
+  ),
+)
+
 it.live("loop calls LLM and returns assistant message", () =>
   provideTmpdirServer(
     Effect.fnUntraced(function* ({ llm }) {
