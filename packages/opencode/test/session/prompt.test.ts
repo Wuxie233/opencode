@@ -387,7 +387,7 @@ const user = Effect.fn("test.user")(function* (sessionID: SessionID, text: strin
   return msg
 })
 
-const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { finish?: string }) {
+const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { finish?: string; text?: string }) {
   const session = yield* Session.Service
   const msg = yield* user(sessionID, "hello")
   const assistant: SessionV1.Assistant = {
@@ -411,9 +411,43 @@ const seed = Effect.fn("test.seed")(function* (sessionID: SessionID, opts?: { fi
     messageID: assistant.id,
     sessionID,
     type: "text",
-    text: "hi there",
+    text: opts?.text ?? "hi there",
   })
   return { user: msg, assistant }
+})
+
+const assistant = Effect.fn("test.assistant")(function* (
+  sessionID: SessionID,
+  parentID: MessageID,
+  opts?: { finish?: string; text?: string },
+) {
+  const session = yield* Session.Service
+  const msg: SessionV1.Assistant = {
+    id: MessageID.ascending(),
+    role: "assistant",
+    parentID,
+    sessionID,
+    mode: "build",
+    agent: "build",
+    cost: 0,
+    path: { cwd: "/tmp", root: "/tmp" },
+    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    modelID: ref.modelID,
+    providerID: ref.providerID,
+    time: { created: Date.now() },
+    ...(opts?.finish ? { finish: opts.finish } : {}),
+  }
+  yield* session.updateMessage(msg)
+  if (opts?.text !== undefined) {
+    yield* session.updatePart({
+      id: PartID.ascending(),
+      messageID: msg.id,
+      sessionID,
+      type: "text",
+      text: opts.text,
+    })
+  }
+  return msg
 })
 
 const addSubtask = (sessionID: SessionID, messageID: MessageID, model = ref) =>
@@ -485,6 +519,94 @@ it.instance("loop exits without an LLM request for interrupted orphan tool calls
     const result = yield* prompt.loop({ sessionID: chat.id })
     expect(result.info.id).toBe(seeded.assistant.id)
     expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+it.instance("loop replies to latest user when supplied message ID sorts before prior assistant", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const old = yield* seed(chat.id, { finish: "stop" })
+    const id = MessageID.ascending("msg_00000000000000000000000000")
+    expect(id < old.assistant.id).toBe(true)
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      messageID: id,
+      agent: "build",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "newer" }],
+    })
+    yield* llm.text("newer reply")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.id).not.toBe(old.assistant.id)
+      expect(result.info.parentID).toBe(id)
+    }
+    expect(result.parts.some((part) => part.type === "text" && part.text === "newer reply")).toBe(true)
+    expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("loop reuses existing terminal assistant for duplicate same-parent runs", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id, { finish: "stop", text: "done" })
+    yield* assistant(chat.id, seeded.user.id)
+    yield* llm.text("duplicate")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(result.info.id).toBe(seeded.assistant.id)
+    expect(result.parts.some((part) => part.type === "text" && part.text === "done")).toBe(true)
+    expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(2)
+    expect(yield* llm.hits).toHaveLength(0)
+  }),
+)
+
+it.instance("loop does not treat tool-call finish as duplicate terminal assistant", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const seeded = yield* seed(chat.id, { finish: "tool-calls", text: "needs tool" })
+    yield* assistant(chat.id, seeded.user.id)
+    yield* llm.text("after tool")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(result.info.role).toBe("assistant")
+    expect(result.info.id).not.toBe(seeded.assistant.id)
+    expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(3)
+    expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("loop does not treat empty stop assistant as duplicate terminal assistant", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    const msg = yield* user(chat.id, "hello")
+    yield* assistant(chat.id, msg.id, { finish: "stop", text: "" })
+    yield* llm.text("retry reply")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    expect(result.info.role).toBe("assistant")
+    expect(result.parts.some((part) => part.type === "text" && part.text === "retry reply")).toBe(true)
+    expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(2)
+    expect(yield* llm.hits).toHaveLength(1)
   }),
 )
 
