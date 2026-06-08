@@ -1131,6 +1131,27 @@ export const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
+    function hasNonEmptyText(parts: SessionV1.Part[]) {
+      return parts.some((part) => part.type === "text" && part.text.trim())
+    }
+
+    function hasUnhandledToolCalls(parts: SessionV1.Part[]) {
+      return parts.some(
+        (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
+      )
+    }
+
+    function terminalAssistantForParent(msgs: SessionV1.WithParts[], parentID: MessageID) {
+      return msgs.findLast(
+        (msg) =>
+          msg.info.role === "assistant" &&
+          msg.info.parentID === parentID &&
+          msg.info.finish === "stop" &&
+          hasNonEmptyText(msg.parts) &&
+          !hasUnhandledToolCalls(msg.parts),
+      )
+    }
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1156,16 +1177,15 @@ export const layer = Layer.effect(
           // Some providers return "stop" even when the assistant message contains
           // tool calls. Keep the loop running so tool results can be sent back to
           // the model, but ignore cleanup-marked interrupted orphans.
-          const hasToolCalls =
-            lastAssistantMsg?.parts.some(
-              (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
-            ) ?? false
+          const hasToolCalls = lastAssistantMsg ? hasUnhandledToolCalls(lastAssistantMsg.parts) : false
 
           if (
             lastAssistant?.finish &&
             !["tool-calls"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastUser.id < lastAssistant.id
+            lastAssistant.parentID === lastUser.id &&
+            lastAssistantMsg !== undefined &&
+            hasNonEmptyText(lastAssistantMsg.parts)
           ) {
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
@@ -1218,6 +1238,13 @@ export const layer = Layer.effect(
           ) {
             yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
             continue
+          }
+
+          const existingTerminal = terminalAssistantForParent(msgs, lastUser.id)
+          if (existingTerminal) {
+            yield* slog.info("reusing terminal assistant")
+            yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
+            return existingTerminal
           }
 
           const agent = yield* agents.get(lastUser.agent)
