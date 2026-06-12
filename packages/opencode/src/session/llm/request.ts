@@ -5,7 +5,6 @@ import type { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceState } from "@/effect/instance-state"
 import { Permission } from "@/permission"
 import type { Agent } from "@/agent/agent"
-import type { MessageV2 } from "../message-v2"
 import type { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { SystemPrompt } from "../system"
@@ -16,6 +15,7 @@ import type { Plugin } from "@/plugin"
 import { mergeDeep } from "remeda"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
+const MODELS_REQUIRING_USER_TAIL = new Set(["claude-opus-4-8", "claude-opus-4.8"])
 
 type PrepareInput = {
   readonly user: SessionV1.User
@@ -98,7 +98,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   }
   if (isOpenaiOauth) options.instructions = system.join("\n")
 
-  const messages =
+  const messages = ensureUserTail(
     isOpenaiOauth || input.isWorkflow
       ? input.messages
       : [
@@ -109,7 +109,9 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
             }),
           ),
           ...input.messages,
-        ]
+        ],
+    input.model,
+  )
 
   const params = yield* input.plugin.trigger(
     "chat.params",
@@ -201,6 +203,17 @@ function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission"
     Permission.merge(input.agent.permission, input.permission ?? []),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
+}
+
+function ensureUserTail(messages: ModelMessage[], model: Provider.Model): ModelMessage[] {
+  const last = messages.at(-1)
+  if (last?.role !== "assistant") return messages
+  if (!requiresUserTail(model)) return messages
+  return [...messages, { role: "user", content: "Please continue." }]
+}
+
+function requiresUserTail(model: Provider.Model) {
+  return [model.id, model.api.id].some((id) => MODELS_REQUIRING_USER_TAIL.has(String(id).toLowerCase()))
 }
 
 export function hasToolCalls(messages: ModelMessage[]): boolean {

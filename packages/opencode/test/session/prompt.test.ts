@@ -8,7 +8,7 @@ import { FetchHttpClient } from "effect/unstable/http"
 import { expect } from "bun:test"
 import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import path from "path"
-import { fileURLToPath, pathToFileURL } from "url"
+import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
@@ -284,6 +284,26 @@ function providerCfg(url: string) {
         options: {
           ...cfg.provider.test.options,
           baseURL: url,
+        },
+      },
+    },
+  }
+}
+
+function opusProviderCfg(url: string) {
+  const base = providerCfg(url)
+  return {
+    ...base,
+    provider: {
+      ...base.provider,
+      test: {
+        ...base.provider.test,
+        models: {
+          "claude-opus-4-8": {
+            ...cfg.provider.test.models["test-model"],
+            id: "claude-opus-4-8",
+            name: "Claude Opus 4.8",
+          },
         },
       },
     },
@@ -600,6 +620,73 @@ it.instance("loop does not treat empty stop assistant as duplicate terminal assi
     expect(result.parts.some((part) => part.type === "text" && part.text === "retry reply")).toBe(true)
     expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(2)
     expect(yield* llm.hits).toHaveLength(1)
+  }),
+)
+
+it.instance("loop avoids final assistant prefill for claude-opus-4-8", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...opusProviderCfg(url),
+      agent: {
+        build: {
+          model: "test/claude-opus-4-8",
+          steps: 1,
+        },
+      },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Opus prefill" })
+
+    yield* llm.text("ok")
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      parts: [{ type: "text", text: "hello" }],
+    })
+
+    expect(result.info.role).toBe("assistant")
+    const inputs = yield* llm.inputs
+    const lastMessage = (inputs[0]?.messages as Array<{ role?: string }> | undefined)?.at(-1)
+    expect(lastMessage?.role).toBe("user")
+  }),
+)
+
+it.instance("loop avoids stored assistant tail prefill for claude-opus-4-8", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...opusProviderCfg(url),
+      agent: {
+        build: {
+          model: "test/claude-opus-4-8",
+        },
+      },
+    }))
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Stored Opus prefill" })
+
+    const userMsg = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    if (userMsg.info.role !== "user") throw new Error("expected user message")
+    yield* assistant(chat.id, userMsg.info.id, { text: "unfinished assistant tail" })
+    yield* llm.text("continued")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+
+    expect(result.info.role).toBe("assistant")
+    const inputs = yield* llm.inputs
+    const messages = inputs[0]?.messages
+    const lastMessage = (Array.isArray(messages) ? messages : []).at(-1)
+    expect(lastMessage && typeof lastMessage === "object" && "role" in lastMessage ? lastMessage.role : undefined).toBe(
+      "user",
+    )
+    expect(JSON.stringify(messages)).toContain("unfinished assistant tail")
   }),
 )
 
