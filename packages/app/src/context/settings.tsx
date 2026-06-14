@@ -1,7 +1,8 @@
 import { createStore, reconcile } from "solid-js/store"
 import { createEffect, createMemo } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { persisted } from "@/utils/persist"
+import { Persist, persisted } from "@/utils/persist"
+import { useServer } from "@/context/server"
 
 export interface NotificationSettings {
   agent: boolean
@@ -152,7 +153,11 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
   name: "Settings",
   gate: false,
   init: () => {
-    const [store, setStore, _, ready] = persisted("settings.v3", createStore<Settings>(defaultSettings))
+    const server = useServer()
+    const [store, setStore, _, ready] = persisted(
+      Persist.serverGlobal(server.scope(), "settings.v3", ["settings.v3"]),
+      createStore<Settings>(defaultSettings),
+    )
     const showFileTree = withFallback(() => store.general?.showFileTree, defaultSettings.general.showFileTree)
     const showSearch = withFallback(() => store.general?.showSearch, defaultSettings.general.showSearch)
     const showStatus = withFallback(() => store.general?.showStatus, defaultSettings.general.showStatus)
