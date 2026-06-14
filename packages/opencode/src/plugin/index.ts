@@ -4,9 +4,14 @@ import type {
   PluginInput,
   Plugin as PluginInstance,
   PluginModule,
+  PluginStorage as PluginStorageApi,
   WorkspaceAdapter as PluginWorkspaceAdapter,
 } from "@opencode-ai/plugin"
 import { Config } from "@/config/config"
+import { Storage } from "@/storage/storage"
+import { PluginStorage as PluginStorageCore } from "./storage"
+import { PluginRoute } from "./route"
+import { WebState } from "./web-state"
 import { createOpencodeClient } from "@opencode-ai/sdk"
 import { ServerAuth } from "@/server/auth"
 import { CodexAuthPlugin } from "./openai/codex"
@@ -61,9 +66,12 @@ export function experimentalWebSocketsEnabled(input: { enabled: boolean; channel
   return input.enabled || ["local", "dev", "beta"].includes(input.channel ?? InstallationChannel)
 }
 
-// Built-in plugins that are directly imported (not installed from npm)
-function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
-  return [
+// Built-in plugins that are directly imported (not installed from npm). The
+// explicit id scopes each plugin's routes/storage; auth plugins keep their prior
+// function-name id, and the first-party web-state plugin pins the id its clients
+// depend on.
+function internalPlugins(flags: RuntimeFlags.Info): { id: string; plugin: PluginInstance }[] {
+  const auth: PluginInstance[] = [
     // Temporary rollout: pre-release builds use WebSockets by default; releases require explicit opt-in.
     (input) =>
       CodexAuthPlugin(input, {
@@ -78,6 +86,10 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
     DigitalOceanAuthPlugin,
     SnowflakeCortexAuthPlugin,
     XaiAuthPlugin,
+  ]
+  return [
+    ...auth.map((plugin) => ({ id: plugin.name || "internal", plugin })),
+    { id: WebState.ID, plugin: WebState.plugin },
   ]
 }
 
@@ -107,16 +119,33 @@ function getLegacyPlugins(mod: Record<string, unknown>) {
   return result
 }
 
-async function applyPlugin(load: PluginLoader.Loaded, input: PluginInput, hooks: Hooks[]) {
+function legacyPluginID(load: PluginLoader.Loaded) {
+  const name = load.pkg?.json.name
+  if (typeof name === "string" && name.trim()) return name.trim()
+  return load.spec
+}
+
+async function applyPlugin(
+  load: PluginLoader.Loaded,
+  makeInput: (pluginID: string) => PluginInput,
+  hooks: Hooks[],
+) {
   const plugin = readV1Plugin(load.mod, load.spec, "server", "detect")
   if (plugin) {
-    await resolvePluginId(load.source, load.spec, load.target, readPluginId(plugin.id, load.spec), load.pkg)
-    hooks.push(await (plugin as PluginModule).server(input, load.options))
+    const pluginID = await resolvePluginId(
+      load.source,
+      load.spec,
+      load.target,
+      readPluginId(plugin.id, load.spec),
+      load.pkg,
+    )
+    hooks.push(await (plugin as PluginModule).server(makeInput(pluginID), load.options))
     return
   }
 
+  const pluginID = legacyPluginID(load)
   for (const server of getLegacyPlugins(load.mod)) {
-    hooks.push(await server(input, load.options))
+    hooks.push(await server(makeInput(pluginID), load.options))
   }
 }
 
@@ -126,6 +155,7 @@ const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const config = yield* Config.Service
     const flags = yield* RuntimeFlags.Service
+    const storage = yield* Storage.Service
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("Plugin.state")(function* (ctx) {
@@ -146,7 +176,16 @@ const layer = Layer.effect(
           ...(serverUrl ? {} : { fetch: async (...args) => Server.Default().app.fetch(...args) }),
         })
         const cfg = yield* config.get()
-        const input: PluginInput = {
+        const makeStorage = (pluginID: string): PluginStorageApi => {
+          const api = PluginStorageCore.scoped(storage, pluginID)
+          return {
+            get: (scope, key) => bridge.promise(api.get(scope, key)),
+            put: (scope, key, record) => bridge.promise(api.put(scope, key, record)),
+            delete: (scope, key) => bridge.promise(api.delete(scope, key)),
+            list: (scope) => bridge.promise(api.list(scope)),
+          }
+        }
+        const makeInput = (pluginID: string): PluginInput => ({
           client,
           project: ctx.project,
           worktree: ctx.worktree,
@@ -156,19 +195,21 @@ const layer = Layer.effect(
               registerAdapter(ctx.project.id, type, adapter as WorkspaceAdapter)
             },
           },
+          experimental_route: PluginRoute.registrar(ctx.directory, pluginID),
+          experimental_storage: makeStorage(pluginID),
           get serverUrl(): URL {
             return Server.url ?? new URL("http://localhost:4096")
           },
           // @ts-expect-error
           $: typeof Bun === "undefined" ? undefined : Bun.$,
-        }
+        })
 
-        for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
+        for (const { id, plugin } of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
           const init = yield* Effect.tryPromise({
-            try: () => plugin(input),
+            try: () => plugin(makeInput(id)),
             catch: errorMessage,
           }).pipe(
-            Effect.tapError((error) => Effect.logError("failed to load internal plugin", { name: plugin.name, error })),
+            Effect.tapError((error) => Effect.logError("failed to load internal plugin", { name: id, error })),
             Effect.option,
           )
           if (init._tag === "Some") hooks.push(init.value)
@@ -218,7 +259,7 @@ const layer = Layer.effect(
           // Keep plugin execution sequential so hook registration and execution
           // order remains deterministic across plugin runs.
           yield* Effect.tryPromise({
-            try: () => applyPlugin(load, input, hooks),
+            try: () => applyPlugin(load, makeInput, hooks),
             catch: (err) => {
               const message = errorMessage(err)
               return message
@@ -308,7 +349,7 @@ const layer = Layer.effect(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [EventV2Bridge.node, Config.node, RuntimeFlags.node],
+  deps: [EventV2Bridge.node, Config.node, RuntimeFlags.node, Storage.node],
 })
 
 export * as Plugin from "."

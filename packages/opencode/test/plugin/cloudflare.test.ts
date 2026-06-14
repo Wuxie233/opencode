@@ -9,6 +9,19 @@ const pluginInput = {
   experimental_workspace: {
     register() {},
   },
+  experimental_route: {
+    register() {},
+  },
+  experimental_storage: {
+    async get() {
+      return undefined
+    },
+    async put() {},
+    async delete() {},
+    async list() {
+      return []
+    },
+  },
   serverUrl: new URL("https://example.com"),
   $: {} as never,
 }
