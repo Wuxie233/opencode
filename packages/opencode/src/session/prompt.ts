@@ -1396,6 +1396,25 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       throw new Error("Impossible")
     })
 
+    function hasNonEmptyText(parts: MessageV2.Part[]) {
+      return parts.some((part) => part.type === "text" && part.text.trim())
+    }
+
+    function hasUnhandledToolCalls(parts: MessageV2.Part[]) {
+      return parts.some((part) => part.type === "tool" && !part.metadata?.providerExecuted)
+    }
+
+    function terminalAssistantForParent(msgs: MessageV2.WithParts[], parentID: MessageID) {
+      return msgs.findLast(
+        (msg) =>
+          msg.info.role === "assistant" &&
+          msg.info.parentID === parentID &&
+          msg.info.finish === "stop" &&
+          hasNonEmptyText(msg.parts) &&
+          !hasUnhandledToolCalls(msg.parts),
+      )
+    }
+
     const runLoop: (sessionID: SessionID) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.run")(
       function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
@@ -1433,14 +1452,15 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           // Keep the loop running so tool results can be sent back to the model.
           // Skip provider-executed tool parts — those were fully handled within the
           // provider's stream (e.g. DWS Agent Platform) and don't need a re-loop.
-          const hasToolCalls =
-            lastAssistantMsg?.parts.some((part) => part.type === "tool" && !part.metadata?.providerExecuted) ?? false
+          const hasToolCalls = lastAssistantMsg ? hasUnhandledToolCalls(lastAssistantMsg.parts) : false
 
           if (
             lastAssistant?.finish &&
             !["tool-calls"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastAssistant.parentID === lastUser.id
+            lastAssistant.parentID === lastUser.id &&
+            lastAssistantMsg !== undefined &&
+            hasNonEmptyText(lastAssistantMsg.parts)
           ) {
             yield* slog.info("exiting loop")
             break
@@ -1482,6 +1502,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           ) {
             yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
             continue
+          }
+
+          const existingTerminal = terminalAssistantForParent(msgs, lastUser.id)
+          if (existingTerminal) {
+            yield* slog.info("reusing terminal assistant")
+            yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
+            return existingTerminal
           }
 
           const agent = yield* agents.get(lastUser.agent)
