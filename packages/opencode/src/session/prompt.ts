@@ -1189,7 +1189,7 @@ const layer = Layer.effect(
 
           const existingTerminal = terminalAssistantForParent(msgs, lastUser.id)
           if (existingTerminal) {
-            yield* slog.info("reusing terminal assistant")
+            yield* Effect.logInfo("reusing terminal assistant", { "session.id": sessionID })
             yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
             return existingTerminal
           }
