@@ -4,10 +4,13 @@ import type { UpgradeWebSocket } from "hono/ws"
 import { Context, Effect } from "effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import z from "zod"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { Format } from "@/format"
 import { TuiRoutes } from "./tui"
 import { Instance } from "@/project/instance"
 import { InstanceRuntime } from "@/project/instance-runtime"
+import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
+import { WorkspaceContext } from "@/control-plane/workspace-context"
 import { Vcs } from "@/project/vcs"
 import { Agent } from "@/agent/agent"
 import { Skill } from "@/skill"
@@ -26,7 +29,6 @@ import { ExperimentalRoutes } from "./experimental"
 import { ProviderRoutes } from "./provider"
 import { EventRoutes } from "./event"
 import { SyncRoutes } from "./sync"
-import { InstanceMiddleware } from "./middleware"
 import { jsonRequest } from "./trace"
 import { ExperimentalHttpApiServer } from "./httpapi/server"
 import { EventPaths } from "./httpapi/event"
@@ -45,7 +47,28 @@ export const InstanceRoutes = (upgrade: UpgradeWebSocket): Hono => {
   const handler = ExperimentalHttpApiServer.webHandler().handler
   const context = Context.empty() as Context.Context<unknown>
 
-  app.all("/api/*", (c) => handler(c.req.raw, context))
+  function decode(input: string) {
+    try {
+      return decodeURIComponent(input)
+    } catch {
+      return input
+    }
+  }
+
+  async function requestContext(request: Request) {
+    const url = new URL(request.url)
+    const instance = await InstanceRuntime.load({
+      directory: AppFileSystem.resolve(
+        decode(url.searchParams.get("directory") || request.headers.get("x-opencode-directory") || process.cwd()),
+      ),
+    })
+    const ctx = Context.add(context, InstanceRef, instance)
+    const workspaceID = WorkspaceContext.workspaceID
+    if (workspaceID === undefined) return ctx
+    return Context.add(ctx, WorkspaceRef, workspaceID)
+  }
+
+  app.all("/api/*", async (c) => handler(c.req.raw, await requestContext(c.req.raw)))
 
   if (Flag.OPENCODE_EXPERIMENTAL_HTTPAPI) {
     app.get(EventPaths.event, (c) => handler(c.req.raw, context))

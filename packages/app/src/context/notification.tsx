@@ -12,6 +12,8 @@ import { base64Encode } from "@opencode-ai/core/util/encode"
 import { decode64 } from "@/utils/base64"
 import { EventSessionError } from "@opencode-ai/sdk/v2"
 import { Persist, persisted } from "@/utils/persist"
+import { useServer } from "@/context/server"
+import { webStateServer } from "@/utils/web-state"
 import { playSoundById } from "@/utils/sound"
 
 type NotificationBase = {
@@ -51,7 +53,7 @@ type NotificationIndex = {
 const MAX_NOTIFICATIONS = 500
 const NOTIFICATION_TTL_MS = 1000 * 60 * 60 * 24 * 30
 
-function pruneNotifications(list: Notification[]) {
+export function pruneNotifications(list: Notification[]) {
   const cutoff = Date.now() - NOTIFICATION_TTL_MS
   const pruned = list.filter((n) => n.time >= cutoff)
   if (pruned.length <= MAX_NOTIFICATIONS) return pruned
@@ -75,7 +77,7 @@ function createNotificationIndex(): NotificationIndex {
   }
 }
 
-function buildNotificationIndex(list: Notification[]) {
+export function buildNotificationIndex(list: Notification[]) {
   const index = createNotificationIndex()
 
   list.forEach((notification) => {
@@ -112,6 +114,7 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const globalSDK = useGlobalSDK()
     const globalSync = useGlobalSync()
     const platform = usePlatform()
+    const server = useServer()
     const settings = useSettings()
     const language = useLanguage()
 
@@ -124,7 +127,13 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
     const currentSession = createMemo(() => params.id)
 
     const [store, setStore, _, ready] = persisted(
-      Persist.global("notification", ["notification.v1"]),
+      {
+        ...Persist.global("notification", ["notification.v1"]),
+        server: webStateServer("notification", {
+          server: () => server.current?.http,
+          fetch: platform.fetch,
+        }),
+      },
       createStore({
         list: [] as Notification[],
       }),

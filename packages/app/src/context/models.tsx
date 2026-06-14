@@ -4,7 +4,10 @@ import { DateTime } from "luxon"
 import { filter, firstBy, flat, groupBy, mapValues, pipe, uniqueBy, values } from "remeda"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { useProviders } from "@/hooks/use-providers"
+import { usePlatform } from "@/context/platform"
+import { useServer } from "@/context/server"
 import { Persist, persisted } from "@/utils/persist"
+import { webStateServer } from "@/utils/web-state"
 
 export type ModelKey = { providerID: string; modelID: string }
 
@@ -26,9 +29,17 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
   name: "Models",
   init: () => {
     const providers = useProviders()
+    const platform = usePlatform()
+    const server = useServer()
 
     const [store, setStore, _, ready] = persisted(
-      Persist.global("model", ["model.v1"]),
+      {
+        ...Persist.global("model", ["model.v1"]),
+        server: webStateServer("model", {
+          server: () => server.current?.http,
+          fetch: platform.fetch,
+        }),
+      },
       createStore<Store>({
         user: [],
         recent: [],
@@ -151,7 +162,7 @@ export const { use: useModels, provider: ModelsProvider } = createSimpleContext(
       visible,
       setVisibility,
       recent: {
-        list: createMemo(() => store.recent),
+        list: () => store.recent,
         push,
       },
       variant: {

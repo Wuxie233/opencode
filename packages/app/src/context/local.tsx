@@ -4,8 +4,11 @@ import { useParams } from "@solidjs/router"
 import { batch, createEffect, createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useModels } from "@/context/models"
+import { usePlatform } from "@/context/platform"
+import { useServer } from "@/context/server"
 import { useProviders } from "@/hooks/use-providers"
 import { Persist, persisted } from "@/utils/persist"
+import { webStateServer } from "@/utils/web-state"
 import { cycleModelVariant, getConfiguredAgentVariant, resolveModelVariant } from "./model-variant"
 import { useSDK } from "./sdk"
 import { useSync } from "./sync"
@@ -59,6 +62,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const providers = useProviders()
     const models = useModels()
+    const platform = usePlatform()
+    const server = useServer()
 
     const id = createMemo(() => params.id || undefined)
     const list = createMemo(() => sync.data.agent.filter((item) => item.mode !== "subagent" && !item.hidden))
@@ -68,6 +73,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       {
         ...Persist.workspace(sdk.directory, "model-selection", ["model-selection.v1"]),
         migrate,
+        server: webStateServer("workspace:model-selection", {
+          server: () => server.current?.http,
+          directory: () => sdk.directory,
+          fetch: platform.fetch,
+        }),
       },
       createStore<Saved>({
         session: {},
@@ -118,11 +128,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       setStore("current", items[0]?.name)
     })
 
-    const scope = createMemo<State | undefined>(() => {
+    const scope = (): State | undefined => {
       const session = id()
       if (!session) return store.draft
       return saved.session[session] ?? handoff.get(handoffKey(sdk.directory, session))
-    })
+    }
 
     createEffect(() => {
       const session = id()

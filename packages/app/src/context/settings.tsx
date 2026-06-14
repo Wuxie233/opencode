@@ -1,7 +1,10 @@
 import { createStore, reconcile } from "solid-js/store"
-import { createEffect, createMemo } from "solid-js"
+import { createEffect } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { persisted } from "@/utils/persist"
+import { usePlatform } from "@/context/platform"
+import { useServer } from "@/context/server"
+import { webStateServer } from "@/utils/web-state"
 
 export interface NotificationSettings {
   agent: boolean
@@ -147,13 +150,24 @@ const defaultSettings: Settings = {
 }
 
 function withFallback<T>(read: () => T | undefined, fallback: T) {
-  return createMemo(() => read() ?? fallback)
+  return () => read() ?? fallback
 }
 
 export const { use: useSettings, provider: SettingsProvider } = createSimpleContext({
   name: "Settings",
   init: () => {
-    const [store, setStore, _, ready] = persisted("settings.v3", createStore<Settings>(defaultSettings))
+    const platform = usePlatform()
+    const server = useServer()
+    const [store, setStore, _, ready] = persisted(
+      {
+        key: "settings.v3",
+        server: webStateServer("settings.v3", {
+          server: () => server.current?.http,
+          fetch: platform.fetch,
+        }),
+      },
+      createStore<Settings>(defaultSettings),
+    )
 
     createEffect(() => {
       if (typeof document === "undefined") return

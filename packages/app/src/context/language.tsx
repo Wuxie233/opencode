@@ -2,7 +2,9 @@ import * as i18n from "@solid-primitives/i18n"
 import { createEffect, createMemo, createResource } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "@opencode-ai/ui/context"
+import { usePlatform } from "@/context/platform"
 import { Persist, persisted } from "@/utils/persist"
+import { defaultWebStateServer } from "@/utils/web-state"
 import { dict as en } from "@/i18n/en"
 import { dict as uiEn } from "@opencode-ai/ui/i18n/en"
 
@@ -193,9 +195,13 @@ if (warm !== "en") void loadDict(warm)
 export const { use: useLanguage, provider: LanguageProvider } = createSimpleContext({
   name: "Language",
   init: (props: { locale?: Locale }) => {
+    const platform = usePlatform()
     const initial = props.locale ?? readStoredLocale() ?? detectLocale()
     const [store, setStore, _, ready] = persisted(
-      Persist.global("language", ["language.v1"]),
+      {
+        ...Persist.global("language", ["language.v1"]),
+        server: defaultWebStateServer("language", platform),
+      },
       createStore({
         locale: initial,
       }),

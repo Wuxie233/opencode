@@ -5,6 +5,9 @@ import type { PermissionRequest } from "@opencode-ai/sdk/v2/client"
 import { Persist, persisted } from "@/utils/persist"
 import { useGlobalSDK } from "@/context/global-sdk"
 import { useGlobalSync } from "./global-sync"
+import { usePlatform } from "@/context/platform"
+import { useServer } from "@/context/server"
+import { webStateServer } from "@/utils/web-state"
 import { useParams } from "@solidjs/router"
 import { decode64 } from "@/utils/base64"
 import {
@@ -50,6 +53,8 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
     const params = useParams()
     const globalSDK = useGlobalSDK()
     const globalSync = useGlobalSync()
+    const platform = usePlatform()
+    const server = useServer()
 
     const permissionsEnabled = createMemo(() => {
       const directory = decode64(params.dir)
@@ -61,6 +66,10 @@ export const { use: usePermission, provider: PermissionProvider } = createSimple
     const [store, setStore, _, ready] = persisted(
       {
         ...Persist.global("permission", ["permission.v3"]),
+        server: webStateServer("permission", {
+          server: () => server.current?.http,
+          fetch: platform.fetch,
+        }),
         migrate(value) {
           if (!value || typeof value !== "object" || Array.isArray(value)) return value
 

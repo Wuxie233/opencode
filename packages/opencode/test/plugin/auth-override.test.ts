@@ -9,6 +9,7 @@ import { ProviderID } from "../../src/provider/schema"
 import { Plugin } from "@/plugin"
 import { Auth } from "@/auth"
 import { Bus } from "@/bus"
+import { Storage } from "@/storage/storage"
 import { TestConfig } from "../fixture/config"
 
 function layer(directory: string, plugins: string[]) {
@@ -17,6 +18,7 @@ function layer(directory: string, plugins: string[]) {
     Layer.provide(
       Plugin.layer.pipe(
         Layer.provide(Bus.layer),
+        Layer.provide(Storage.defaultLayer),
         Layer.provide(
           TestConfig.layer({
             get: () =>

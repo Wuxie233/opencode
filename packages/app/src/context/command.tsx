@@ -5,8 +5,11 @@ import { createStore } from "solid-js/store"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { useLanguage } from "@/context/language"
 import { useSettings } from "@/context/settings"
+import { usePlatform } from "@/context/platform"
+import { useServer } from "@/context/server"
 import { dict as en } from "@/i18n/en"
 import { Persist, persisted } from "@/utils/persist"
+import { webStateServer } from "@/utils/web-state"
 
 const IS_MAC = typeof navigator === "object" && /(Mac|iPod|iPhone|iPad)/.test(navigator.platform)
 
@@ -233,6 +236,8 @@ export const { use: useCommand, provider: CommandProvider } = createSimpleContex
     const dialog = useDialog()
     const settings = useSettings()
     const language = useLanguage()
+    const platform = usePlatform()
+    const server = useServer()
     const [store, setStore] = createStore({
       registrations: [] as CommandRegistration[],
       suspendCount: 0,
@@ -241,7 +246,13 @@ export const { use: useCommand, provider: CommandProvider } = createSimpleContex
 
     type CommandCatalog = Record<string, CommandCatalogItem>
     const [catalog, setCatalog, _, catalogReady] = persisted(
-      Persist.global("command.catalog.v1"),
+      {
+        ...Persist.global("command.catalog.v1"),
+        server: webStateServer("command.catalog.v1", {
+          server: () => server.current?.http,
+          fetch: platform.fetch,
+        }),
+      },
       createStore<CommandCatalog>({}),
     )
 

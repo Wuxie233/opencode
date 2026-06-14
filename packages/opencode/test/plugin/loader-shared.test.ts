@@ -13,6 +13,7 @@ const { Plugin } = await import("../../src/plugin/index")
 const { PluginLoader } = await import("../../src/plugin/loader")
 const { readPackageThemes } = await import("../../src/plugin/shared")
 const { Bus } = await import("../../src/bus")
+const { Storage } = await import("../../src/storage/storage")
 const { Npm } = await import("@opencode-ai/core/npm")
 const { TestConfig } = await import("../fixture/config")
 
@@ -39,6 +40,7 @@ async function load(dir: string) {
     Effect.provide(
       Plugin.layer.pipe(
         Layer.provide(Bus.layer),
+        Layer.provide(Storage.defaultLayer),
         Layer.provide(
           TestConfig.layer({
             get: () =>

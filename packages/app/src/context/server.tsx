@@ -1,8 +1,10 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { type Accessor, batch, createEffect, createMemo, onCleanup } from "solid-js"
+import { batch, createEffect, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
+import { usePlatform } from "@/context/platform"
 import { Persist, persisted } from "@/utils/persist"
 import { useCheckServerHealth } from "@/utils/server-health"
+import { defaultWebStateServer } from "@/utils/web-state"
 
 type StoredProject = { worktree: string; expanded: boolean }
 type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http
@@ -100,10 +102,15 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     servers?: Array<ServerConnection.Any>
   }) => {
     const checkServerHealth = useCheckServerHealth()
+    const platform = usePlatform()
 
     const [store, setStore, _, ready] = persisted(
-      Persist.global("server", ["server.v3"]),
+      {
+        ...Persist.global("server", ["server.v3"]),
+        server: defaultWebStateServer("server", platform),
+      },
       createStore({
+        active: props.defaultServer,
         list: [] as StoredServer[],
         projects: {} as Record<string, StoredProject[]>,
         lastProject: {} as Record<string, string>,
@@ -112,7 +119,7 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
 
     const url = (x: StoredServer) => (typeof x === "string" ? x : "type" in x ? x.http.url : x.url)
 
-    const allServers = createMemo((): Array<ServerConnection.Any> => {
+    const allServers = (): Array<ServerConnection.Any> => {
       const servers = [
         ...(props.servers ?? []),
         ...store.list.map((value) =>
@@ -133,14 +140,14 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       )
 
       return [...deduped.values()]
-    })
+    }
 
     const [state, setState] = createStore({
-      active: props.defaultServer,
       healthy: undefined as boolean | undefined,
     })
 
     const healthy = () => state.healthy
+    const active = () => store.active ?? props.defaultServer
 
     function startHealthPolling(conn: ServerConnection.Any) {
       let alive = true
@@ -168,7 +175,8 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     }
 
     function setActive(input: ServerConnection.Key) {
-      if (state.active !== input) setState("active", input)
+      if (active() === input) return
+      setStore("active", input)
     }
 
     function add(input: ServerConnection.Http) {
@@ -182,7 +190,8 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
         } else {
           setStore("list", store.list.length, conn)
         }
-        setState("active", ServerConnection.key(conn))
+        const active = ServerConnection.key(conn)
+        setStore("active", active)
         return conn
       })
     }
@@ -191,14 +200,15 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       const list = store.list.filter((x) => url(x) !== key)
       batch(() => {
         setStore("list", list)
-        if (state.active === key) {
+        if (active() === key) {
           const next = list[0]
-          setState("active", next ? ServerConnection.Key.make(url(next)) : props.defaultServer)
+          const active = next ? ServerConnection.Key.make(url(next)) : props.defaultServer
+          setStore("active", active)
         }
       })
     }
 
-    const isReady = createMemo(() => ready() && !!state.active)
+    const isReady = () => ready() && !!active()
 
     const check = (conn: ServerConnection.Any) => checkServerHealth(conn.http).then((x) => x.healthy)
 
@@ -214,22 +224,20 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       onCleanup(startHealthPolling(current_))
     })
 
-    const origin = createMemo(() => projectsKey(state.active))
-    const projectsList = createMemo(() => store.projects[origin()] ?? [])
-    const current: Accessor<ServerConnection.Any | undefined> = createMemo(
-      () => allServers().find((s) => ServerConnection.key(s) === state.active) ?? allServers()[0],
-    )
-    const isLocal = createMemo(() => {
+    const origin = () => projectsKey(active())
+    const projectsList = () => store.projects[origin()] ?? []
+    const current = () => allServers().find((s) => ServerConnection.key(s) === active()) ?? allServers()[0]
+    const isLocal = () => {
       const c = current()
       return (c?.type === "sidecar" && c.variant === "base") || (c?.type === "http" && isLocalHost(c.http.url))
-    })
+    }
 
     return {
       ready: isReady,
       healthy,
       isLocal,
       get key() {
-        return state.active
+        return active()
       },
       get name() {
         return serverName(current())

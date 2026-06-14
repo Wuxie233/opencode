@@ -1,5 +1,5 @@
 import { createStore, produce } from "solid-js/store"
-import { batch, createEffect, createMemo, onCleanup, onMount, type Accessor } from "solid-js"
+import { batch, createEffect, onCleanup, onMount, type Accessor } from "solid-js"
 import { createSimpleContext } from "@opencode-ai/ui/context"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import { useGlobalSync } from "./global-sync"
@@ -8,6 +8,7 @@ import { useServer } from "./server"
 import { usePlatform } from "./platform"
 import { Project } from "@opencode-ai/sdk/v2"
 import { Persist, persisted, removePersisted } from "@/utils/persist"
+import { webStateServer } from "@/utils/web-state"
 import { decode64 } from "@/utils/base64"
 import { same } from "@/utils/same"
 import { createScrollPersistence, type SessionScroll } from "./layout-scroll"
@@ -226,7 +227,13 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       }
     }
 
-    const target = Persist.global("layout", ["layout.v6"])
+    const target = {
+      ...Persist.global("layout", ["layout.v6"]),
+      server: webStateServer("layout", {
+        server: () => server.current?.http,
+        fetch: platform.fetch,
+      }),
+    }
     const [store, setStore, _, ready] = persisted(
       { ...target, migrate },
       createStore({
@@ -401,7 +408,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       return base
     }
 
-    const roots = createMemo(() => {
+    const roots = () => {
       const map = new Map<string, string>()
       for (const project of globalSync.data.project) {
         const sandboxes = project.sandboxes ?? []
@@ -410,7 +417,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         }
       }
       return map
-    })
+    }
 
     const rootFor = (directory: string) => {
       const map = roots()
@@ -455,8 +462,8 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       })
     })
 
-    const enriched = createMemo(() => server.projects.list().map(enrich))
-    const list = createMemo(() => {
+    const enriched = () => server.projects.list().map(enrich)
+    const list = () => {
       const projects = enriched()
       return projects.map((project) => {
         const color = project.icon?.color ?? colors[project.worktree]
@@ -464,7 +471,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         const icon = project.icon ? { ...project.icon, color } : { color }
         return { ...project, icon }
       })
-    })
+    }
 
     createEffect(() => {
       const projects = enriched()
@@ -545,7 +552,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
     return {
       ready,
       handoff: {
-        tabs: createMemo(() => store.handoff?.tabs),
+        tabs: () => store.handoff?.tabs,
         setTabs(dir: string, id: string) {
           setStore("handoff", "tabs", { dir, id, at: Date.now() })
         },
@@ -576,7 +583,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
       },
       sidebar: {
-        opened: createMemo(() => store.sidebar.opened),
+        opened: () => store.sidebar.opened,
         open() {
           setStore("sidebar", "opened", true)
         },
@@ -586,7 +593,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         toggle() {
           setStore("sidebar", "opened", (x) => !x)
         },
-        width: createMemo(() => store.sidebar.width),
+        width: () => store.sidebar.width,
         resize(width: number) {
           setStore("sidebar", "width", width)
         },
@@ -602,13 +609,13 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
       },
       terminal: {
-        height: createMemo(() => store.terminal.height),
+        height: () => store.terminal.height,
         resize(height: number) {
           setStore("terminal", "height", height)
         },
       },
       review: {
-        diffStyle: createMemo(() => store.review?.diffStyle ?? "split"),
+        diffStyle: () => store.review?.diffStyle ?? "split",
         setDiffStyle(diffStyle: ReviewDiffStyle) {
           if (!store.review) {
             setStore("review", { diffStyle, panelOpened: true })
@@ -618,9 +625,9 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
       },
       fileTree: {
-        opened: createMemo(() => store.fileTree?.opened ?? true),
-        width: createMemo(() => store.fileTree?.width ?? DEFAULT_FILE_TREE_WIDTH),
-        tab: createMemo(() => store.fileTree?.tab ?? "changes"),
+        opened: () => store.fileTree?.opened ?? true,
+        width: () => store.fileTree?.width ?? DEFAULT_FILE_TREE_WIDTH,
+        tab: () => store.fileTree?.tab ?? "changes",
         setTab(tab: "changes" | "all") {
           if (!store.fileTree) {
             setStore("fileTree", { opened: true, width: DEFAULT_FILE_TREE_WIDTH, tab })
@@ -658,7 +665,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
       },
       session: {
-        width: createMemo(() => store.session?.width ?? DEFAULT_SESSION_WIDTH),
+        width: () => store.session?.width ?? DEFAULT_SESSION_WIDTH,
         resize(width: number) {
           if (!store.session) {
             setStore("session", { width })
@@ -668,7 +675,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
         },
       },
       mobileSidebar: {
-        opened: createMemo(() => store.mobileSidebar?.opened ?? false),
+        opened: () => store.mobileSidebar?.opened ?? false,
         show() {
           setStore("mobileSidebar", "opened", true)
         },
@@ -724,9 +731,9 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       },
       view(sessionKey: string | Accessor<string>) {
         const key = createSessionKeyReader(sessionKey, ensureKey)
-        const s = createMemo(() => store.sessionView[key()] ?? { scroll: {} })
-        const terminalOpened = createMemo(() => store.terminal?.opened ?? false)
-        const reviewPanelOpened = createMemo(() => store.review?.panelOpened ?? true)
+        const s = () => store.sessionView[key()] ?? { scroll: {} }
+        const terminalOpened = () => store.terminal?.opened ?? false
+        const reviewPanelOpened = () => store.review?.panelOpened ?? true
 
         function setTerminalOpened(next: boolean) {
           const current = store.terminal
@@ -784,7 +791,7 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
             },
           },
           review: {
-            open: createMemo(() => s().reviewOpen ?? []),
+            open: () => s().reviewOpen ?? [],
             setOpen(open: string[]) {
               const session = key()
               const next = Array.from(new Set(open))
@@ -851,14 +858,14 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       },
       tabs(sessionKey: string | Accessor<string>) {
         const key = createSessionKeyReader(sessionKey, ensureKey)
-        const path = createMemo(() => sessionPath(key()))
-        const tabs = createMemo(() => store.sessionTabs[key()] ?? { all: [] })
+        const path = () => sessionPath(key())
+        const tabs = () => store.sessionTabs[key()] ?? { all: [] }
         const normalize = (tab: string) => normalizeSessionTab(path(), tab)
         const normalizeAll = (all: string[]) => normalizeSessionTabList(path(), all)
         return {
           tabs,
-          active: createMemo(() => tabs().active),
-          all: createMemo(() => tabs().all.filter((tab) => tab !== "review")),
+          active: () => tabs().active,
+          all: () => tabs().all.filter((tab) => tab !== "review"),
           setActive(tab: string | undefined) {
             const session = key()
             const next = tab ? normalize(tab) : tab
