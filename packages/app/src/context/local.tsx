@@ -196,10 +196,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             variant: item.variant ?? null,
           })
           const prev = scope()
+          // Re-selecting the same agent must keep a manually picked model/variant; only adopt agent config defaults when switching agents.
+          const sameAgent = prev?.agent === item.name
           const next = {
             agent: item.name,
-            model: item.model ?? prev?.model,
-            variant: item.variant ?? prev?.variant,
+            model: sameAgent ? (prev?.model ?? item.model) : (item.model ?? prev?.model),
+            variant: sameAgent ? (prev?.variant ?? item.variant) : (item.variant ?? prev?.variant),
           } satisfies State
           const session = id()
           if (session) {
