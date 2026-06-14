@@ -63,6 +63,7 @@ beforeAll(async () => {
 })
 
 beforeEach(() => {
+  persistTesting?.resetCache()
   storage.clear()
   storage.events.length = 0
   storage.calls.get = 0
@@ -189,7 +190,10 @@ describe("persist localStorage resilience", () => {
     const windows = Persist.serverWorkspace("https://windows.example" as ServerScope, "/home/luke/repo", "prompt")
     const debian = Persist.serverWorkspace("https://debian.example" as ServerScope, "/home/luke/repo", "prompt")
 
-    expect(local).toEqual(Persist.workspace("/home/luke/repo", "prompt"))
+    expect(local).toEqual({
+      ...Persist.workspace("/home/luke/repo", "prompt"),
+      server: { group: "workspace:prompt", scope: ServerScope.local, directory: "/home/luke/repo" },
+    })
     expect(windows.storage).not.toBe(local.storage)
     expect(debian.storage).not.toBe(local.storage)
     expect(debian.storage).not.toBe(windows.storage)
@@ -198,10 +202,14 @@ describe("persist localStorage resilience", () => {
   })
 
   test("server global target preserves local key and isolates remote keys", () => {
-    expect(Persist.serverGlobal(ServerScope.local, "notification")).toEqual(Persist.global("notification"))
+    expect(Persist.serverGlobal(ServerScope.local, "notification")).toEqual({
+      ...Persist.global("notification"),
+      server: { group: "notification", scope: ServerScope.local },
+    })
     expect(Persist.serverGlobal("https://debian.example" as ServerScope, "notification")).toEqual({
       storage: "opencode.global.dat",
       key: "https://debian.example\0notification",
+      server: { group: "notification", scope: "https://debian.example" as ServerScope },
     })
   })
 

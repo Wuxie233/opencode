@@ -1,8 +1,10 @@
 import { createSimpleContext } from "@opencode-ai/ui/context"
-import { type Accessor, batch, createMemo } from "solid-js"
+import { type Accessor, batch, createMemo, onCleanup } from "solid-js"
 import { createStore, type SetStoreFunction, type Store } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
 import { ServerScope } from "@/utils/server-scope"
+import { registerWebStateServerResolver } from "@/utils/web-state"
+import { usePlatform } from "./platform"
 
 type StoredProject = { worktree: string; expanded: boolean }
 type StoredServer = string | ServerConnection.HttpBase | ServerConnection.Http
@@ -63,6 +65,27 @@ export function migrateCanonicalLocalServerState(value: unknown, canonicalLocalS
     next.lastProject = nextLastProject
   }
   return next
+}
+
+export function migrateServerListState(value: unknown) {
+  if (!isRecord(value)) return value
+  return { list: Array.isArray(value.list) ? value.list : [] }
+}
+
+export function migrateServerProjectsState(value: unknown, canonicalLocalServer?: ServerConnection.Key): ServerProjectState {
+  const migrated = migrateCanonicalLocalServerState(value, canonicalLocalServer)
+  if (!isRecord(migrated)) return { projects: {}, lastProject: {} }
+  return {
+    projects: isRecord(migrated.projects) ? (migrated.projects as Record<string, StoredProject[]>) : {},
+    lastProject: isRecord(migrated.lastProject) ? (migrated.lastProject as Record<string, string>) : {},
+  }
+}
+
+function authHeaders(conn: ServerConnection.Any) {
+  if (!conn.http.password) return
+  return {
+    authorization: `Basic ${btoa(`${conn.http.username ?? "opencode"}:${conn.http.password}`)}`,
+  }
 }
 
 export function createServerProjects<T extends ServerProjectState>(input: {
@@ -226,27 +249,49 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
     canonicalLocalServer?: ServerConnection.Key
     servers?: Array<ServerConnection.Any>
   }) => {
-    const [store, setStore, _, ready] = persisted(
+    const platform = usePlatform()
+    const [state, setState] = createStore({
+      active: props.defaultServer,
+    })
+    let storedServers: Store<{ list: StoredServer[] }> | undefined
+    const resolvedServers = () => resolveServerList({ stored: storedServers?.list ?? [], props: props.servers })
+    const scope = (key = state.active) => ServerScope.fromServerKey(key, props.canonicalLocalServer)
+    const unregisterResolver = registerWebStateServerResolver((targetScope) => {
+      const conn = resolvedServers().find((item) => scope(ServerConnection.key(item)) === targetScope)
+      if (!conn) return
+      return {
+        url: conn.http.url,
+        fetch: platform.fetch ?? globalThis.fetch,
+        headers: authHeaders(conn),
+      }
+    })
+    onCleanup(unregisterResolver)
+
+    const [projectStore, setProjectStore, , projectsReady] = persisted(
       {
-        ...Persist.global("server", ["server.v3"]),
-        migrate: (value) => migrateCanonicalLocalServerState(value, props.canonicalLocalServer),
+        ...Persist.serverGlobal(scope(), "server.projects", ["server.v3"]),
+        migrate: (value) => migrateServerProjectsState(value, props.canonicalLocalServer),
       },
       createStore({
-        list: [] as StoredServer[],
         projects: {} as Record<string, StoredProject[]>,
         lastProject: {} as Record<string, string>,
       }),
     )
 
+    const [store, setStore, _, ready] = persisted(
+      {
+        ...Persist.global("server", ["server.v3"]),
+        migrate: migrateServerListState,
+      },
+      createStore({
+        list: [] as StoredServer[],
+      }),
+    )
+    storedServers = store
+
     const url = (x: StoredServer) => (typeof x === "string" ? x : "type" in x ? x.http.url : x.url)
 
-    const allServers = createMemo((): Array<ServerConnection.Any> => {
-      return resolveServerList({ stored: store.list, props: props.servers })
-    })
-
-    const [state, setState] = createStore({
-      active: props.defaultServer,
-    })
+    const allServers = createMemo((): Array<ServerConnection.Any> => resolvedServers())
 
     function setActive(input: ServerConnection.Key) {
       if (state.active !== input) setState("active", input)
@@ -277,15 +322,14 @@ export const { use: useServer, provider: ServerProvider } = createSimpleContext(
       })
     }
 
-    const isReady = createMemo(() => ready() && !!state.active)
+    const isReady = createMemo(() => ready() && projectsReady() && !!state.active)
 
-    const scope = (key = state.active) => ServerScope.fromServerKey(key, props.canonicalLocalServer)
-    const projects = createServerProjects({ scope, store, setStore })
+    const projects = createServerProjects({ scope, store: projectStore, setStore: setProjectStore })
     const projectStores = new Map<ServerConnection.Key, ReturnType<typeof createServerProjects>>()
     const projectsForServer = (key: ServerConnection.Key) => {
       const existing = projectStores.get(key)
       if (existing) return existing
-      const next = createServerProjects({ scope: () => scope(key), store, setStore })
+      const next = createServerProjects({ scope: () => scope(key), store: projectStore, setStore: setProjectStore })
       projectStores.set(key, next)
       return next
     }
