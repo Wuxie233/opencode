@@ -1,7 +1,8 @@
 export * as SessionProjector from "./projector"
 
 import { and, desc, eq, gt, or, sql } from "drizzle-orm"
-import { DateTime, Effect, Layer, Schema } from "effect"
+import { DateTime, Effect, Layer, Schedule, Schema } from "effect"
+import { isSqlError } from "effect/unstable/sql/SqlError"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
 import { makeGlobalNode } from "../effect/app-node"
@@ -17,6 +18,19 @@ import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, Sessio
 import type { DeepMutable } from "../schema"
 
 type DatabaseService = Database.Interface["db"]
+
+// Bounded retry for cross-process SQLITE_BUSY lock contention: only idempotent
+// upserts use it, and only retryable SqlErrors (busy/locked) qualify.
+const sqliteBusyRetrySchedule = Schedule.exponential(50, 1.7).pipe(
+  Schedule.either(Schedule.spaced(500)),
+  Schedule.jittered,
+  Schedule.while((meta) => meta.elapsed < 30_000),
+)
+
+const retryOnSqliteBusy = Effect.retry({
+  while: (error: unknown) => isSqlError(error) && error.isRetryable,
+  schedule: sqliteBusyRetrySchedule,
+})
 
 const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)
 const encodeMessage = Schema.encodeSync(SessionMessage.Message)
@@ -270,7 +284,7 @@ const layer = Layer.effectDiscard(
           .values({ id, session_id: sessionID, time_created, data })
           .onConflictDoUpdate({ target: MessageTable.id, set: { data } })
           .run()
-          .pipe(Effect.orDie)
+          .pipe(retryOnSqliteBusy, Effect.orDie)
       }),
     )
     yield* events.project(SessionV1.Event.MessageRemoved, (event) =>
@@ -321,7 +335,7 @@ const layer = Layer.effectDiscard(
           .values({ id, message_id: messageID, session_id: sessionID, time_created: event.data.time, data })
           .onConflictDoUpdate({ target: PartTable.id, set: { data } })
           .run()
-          .pipe(Effect.orDie)
+          .pipe(retryOnSqliteBusy, Effect.orDie)
         const previous = row && usage(row.data)
         const next = usage(event.data.part)
         if (previous) yield* applyUsage(db, row.session_id, previous, -1)
