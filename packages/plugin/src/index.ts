@@ -53,6 +53,49 @@ export type WorkspaceAdapter = {
   target(config: WorkspaceInfo): WorkspaceTarget | Promise<WorkspaceTarget>
 }
 
+export type PluginRouteHandler = (request: Request) => Response | Promise<Response>
+
+export type PluginRouteRegistrar = {
+  /**
+   * Register an HTTP handler served under the reserved `/api/plugin/<pluginID>/*`
+   * namespace. `path` is relative to the plugin namespace (e.g. `/health` is
+   * served at `/api/plugin/<pluginID>/health`). Handlers receive a standard web
+   * `Request` and return a standard web `Response`.
+   */
+  register(method: string, path: string, handler: PluginRouteHandler): void
+}
+
+/**
+ * Logical scope a plugin storage record belongs to. Records are namespaced by
+ * the owning plugin id AND this scope, so one plugin can never read, list,
+ * overwrite, or delete another plugin's keys, and `global` keys never collide
+ * with `session` keys for the same plugin.
+ */
+export type PluginStorageScope = "global" | "server" | "workspace" | "session"
+
+/**
+ * A plugin storage record. `value` is arbitrary JSON owned by the plugin and
+ * `metadata` is arbitrary plugin-owned bookkeeping. Core storage persists both
+ * verbatim and never interprets them — any conflict policy (for example
+ * last-write-wins by an `updated_at` field) lives in the plugin, not core.
+ */
+export type PluginStorageRecord = {
+  value: unknown
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * Narrow, plugin-scoped JSON/KV storage. The owning plugin id is bound for you;
+ * callers only choose a logical `scope` and `key`. All operations are isolated
+ * to the calling plugin and the given scope.
+ */
+export type PluginStorage = {
+  get(scope: PluginStorageScope, key: string): Promise<PluginStorageRecord | undefined>
+  put(scope: PluginStorageScope, key: string, record: PluginStorageRecord): Promise<void>
+  delete(scope: PluginStorageScope, key: string): Promise<void>
+  list(scope: PluginStorageScope): Promise<string[]>
+}
+
 export type PluginInput = {
   client: ReturnType<typeof createOpencodeClient>
   project: Project
@@ -61,6 +104,8 @@ export type PluginInput = {
   experimental_workspace: {
     register(type: string, adapter: WorkspaceAdapter): void
   }
+  experimental_route: PluginRouteRegistrar
+  experimental_storage: PluginStorage
   serverUrl: URL
   $: BunShell
 }

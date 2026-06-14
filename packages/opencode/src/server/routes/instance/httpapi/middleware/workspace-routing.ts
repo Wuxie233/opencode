@@ -9,7 +9,7 @@ import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute, workspaceProxyURL } 
 import { NotFoundError } from "@/storage/storage"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { Context, Data, Effect, Layer, Option, Schema } from "effect"
-import { HttpClient, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import * as Socket from "effect/unstable/socket/Socket"
 import { InvalidRequestError } from "../errors"
@@ -246,5 +246,27 @@ export const workspaceRoutingLayer = Layer.effect(
         Effect.provideService(Workspace.Service, workspace),
       ),
     )
+  }),
+)
+
+// Router-level twin of `workspaceRoutingLayer` for raw `HttpRouter.use(...)` routes
+// (the plugin route catch-all) that cannot declare HttpApiMiddleware on an
+// endpoint. It provides `WorkspaceRouteContext` to downstream router middleware.
+// Workspace selection here is directory/query based only (no session lookup), so
+// it never requires `Session.Service`.
+export const workspaceRouterMiddleware = HttpRouter.middleware<{ provides: WorkspaceRouteContext }>()(
+  Effect.gen(function* () {
+    const makeWebSocket = yield* Socket.WebSocketConstructor
+    const workspace = yield* Workspace.Service
+    const client = yield* HttpClient.HttpClient
+    return (effect) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest
+        const plan = yield* planRequest(request)
+        return yield* routeWorkspace(client, effect, plan)
+      }).pipe(
+        Effect.provideService(Socket.WebSocketConstructor, makeWebSocket),
+        Effect.provideService(Workspace.Service, workspace),
+      )
   }),
 )

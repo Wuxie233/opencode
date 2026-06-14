@@ -1,7 +1,7 @@
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
 import { InstanceStore } from "@/project/instance-store"
 import { Effect, Layer } from "effect"
-import { HttpServerResponse } from "effect/unstable/http"
+import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import { WorkspaceRouteContext } from "./workspace-routing"
 
@@ -39,5 +39,16 @@ export const instanceContextLayer = Layer.effect(
   Effect.gen(function* () {
     const store = yield* InstanceStore.Service
     return InstanceContextMiddleware.of((effect) => provideInstanceContext(effect, store))
+  }),
+)
+
+// Router-level twin of `instanceContextLayer` for raw `HttpRouter.use(...)` routes
+// (such as the plugin route catch-all) that cannot declare HttpApiMiddleware on an
+// endpoint. It shares the same `provideInstanceContext` core, so it requires the
+// `WorkspaceRouteContext` provided by `workspaceRouterMiddleware`.
+export const instanceRouterMiddleware = HttpRouter.middleware()(
+  Effect.gen(function* () {
+    const store = yield* InstanceStore.Service
+    return (effect) => provideInstanceContext(effect, store)
   }),
 )

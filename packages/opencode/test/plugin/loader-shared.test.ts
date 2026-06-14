@@ -15,6 +15,7 @@ const { EventV2Bridge } = await import("../../src/event-v2-bridge")
 const { Npm } = await import("@opencode-ai/core/npm")
 const { TestConfig } = await import("../fixture/config")
 const { RuntimeFlags } = await import("../../src/effect/runtime-flags")
+const { Storage } = await import("../../src/storage/storage")
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -48,6 +49,7 @@ function load(dir: string, flags?: Parameters<typeof RuntimeFlags.layer>[0]) {
         Plugin.layer.pipe(
           Layer.provide(EventV2Bridge.defaultLayer),
           Layer.provide(RuntimeFlags.layer({ disableDefaultPlugins: true, ...flags })),
+          Layer.provide(Storage.defaultLayer),
           Layer.provide(
             TestConfig.layer({
               get: () =>

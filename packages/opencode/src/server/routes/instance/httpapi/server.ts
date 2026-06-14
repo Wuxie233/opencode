@@ -77,6 +77,7 @@ import {
 import { EventApi } from "./groups/event"
 import { PtyConnectApi } from "./groups/pty"
 import { eventHandlers } from "./handlers/event"
+import { pluginRoute } from "./handlers/plugin"
 import { configHandlers } from "./handlers/config"
 import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
@@ -97,8 +98,8 @@ import { tuiHandlers } from "./handlers/tui"
 import { handlers } from "@opencode-ai/server/handlers"
 import { schemaErrorLayer as v2SchemaErrorLayer } from "@opencode-ai/server/middleware/schema-error"
 import { workspaceHandlers } from "./handlers/workspace"
-import { instanceContextLayer } from "./middleware/instance-context"
-import { workspaceRoutingLayer } from "./middleware/workspace-routing"
+import { instanceContextLayer, instanceRouterMiddleware } from "./middleware/instance-context"
+import { workspaceRoutingLayer, workspaceRouterMiddleware } from "./middleware/workspace-routing"
 import { disposeMiddleware } from "./lifecycle"
 import { memoMap } from "@opencode-ai/core/effect/memo-map"
 import { compressionLayer } from "./middleware/compression"
@@ -193,6 +194,18 @@ const uiRoute = HttpRouter.use((router) =>
   }),
 ).pipe(Layer.provide(authOnlyRouterLayer))
 
+// Raw plugin route catch-all (`/api/plugin/<pluginID>/*`). It needs the same
+// per-request workspace routing + instance context the typed instance routes get,
+// but as router-level middleware because a raw HttpRouter route cannot declare
+// endpoint HttpApiMiddleware. Auth stays a router middleware so an unauthorized
+// request becomes a 401 response, not an unhandled typed error.
+const pluginRouterLayer = authorizationRouterMiddleware
+  .combine(instanceRouterMiddleware)
+  .combine(workspaceRouterMiddleware)
+  .layer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal), Layer.provide(ServerAuth.Config.defaultLayer))
+
+const pluginRouteLayer = pluginRoute.pipe(Layer.provide(pluginRouterLayer))
+
 type RouteRequirements =
   | HttpRouter.HttpRouter
   | HttpRouter.Request<"Error", unknown>
@@ -268,6 +281,7 @@ export function createRoutes(
     instanceRoutes,
     serverRoutes,
     docRoute,
+    pluginRouteLayer,
     uiRoute,
   ).pipe(
     Layer.provide([
