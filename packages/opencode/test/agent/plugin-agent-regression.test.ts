@@ -10,6 +10,7 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Config } from "../../src/config/config"
 import { Env } from "../../src/env"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
+import { Storage } from "../../src/storage/storage"
 import { Plugin } from "../../src/plugin"
 import { AccountTest } from "../fake/account"
 import { AuthTest } from "../fake/auth"
@@ -37,6 +38,7 @@ const pluginLayer = Plugin.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(configLayer),
   Layer.provide(RuntimeFlags.layer({ disableDefaultPlugins: true })),
+  Layer.provide(Storage.defaultLayer),
 )
 const agentLayer = Agent.layer.pipe(
   Layer.provide(configLayer),

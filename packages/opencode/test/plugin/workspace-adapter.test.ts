@@ -13,6 +13,7 @@ import { EventV2Bridge } from "../../src/event-v2-bridge"
 import { Config } from "../../src/config/config"
 import { Env } from "../../src/env"
 import { RuntimeFlags } from "../../src/effect/runtime-flags"
+import { Storage } from "../../src/storage/storage"
 import { Workspace } from "../../src/control-plane/workspace"
 import { Plugin } from "../../src/plugin/index"
 import { InstanceBootstrap } from "../../src/project/bootstrap-service"
@@ -41,6 +42,7 @@ const pluginLayer = Plugin.layer.pipe(
   Layer.provide(EventV2Bridge.defaultLayer),
   Layer.provide(configLayer),
   Layer.provide(RuntimeFlags.layer({ disableDefaultPlugins: true })),
+  Layer.provide(Storage.defaultLayer),
 )
 const noopBootstrapLayer = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
 const workspaceLayer = Workspace.layer.pipe(

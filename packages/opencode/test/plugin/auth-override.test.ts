@@ -8,6 +8,7 @@ import { ProviderAuth } from "@/provider/auth"
 
 import { Plugin } from "@/plugin"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { Storage } from "@/storage/storage"
 import { Auth } from "@/auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TestConfig } from "../fixture/config"
@@ -24,6 +25,7 @@ function layer(directory: string, plugins: string[]) {
       Plugin.layer.pipe(
         Layer.provide(EventV2Bridge.defaultLayer),
         Layer.provide(RuntimeFlags.layer()),
+        Layer.provide(Storage.defaultLayer),
         Layer.provide(
           TestConfig.layer({
             get: () =>
