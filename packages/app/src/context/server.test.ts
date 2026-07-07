@@ -227,6 +227,7 @@ describe("createServerProjects", () => {
     ).toEqual({
       projects: { local: [{ worktree: "/remote", expanded: true }] },
       lastProject: { local: "/remote" },
+      recentlyClosed: {},
     })
   })
 })
