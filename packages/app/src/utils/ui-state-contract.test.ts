@@ -19,6 +19,24 @@ describe("ui state contract", () => {
     expect(UI_STATE_GROUP_IDS).toContain("settings.v3")
   })
 
+  test("group ids include every server-backed persist target", () => {
+    expect([...UI_STATE_GROUP_IDS].toSorted()).toEqual([
+      "layout",
+      "layout.page",
+      "notification",
+      "permission",
+      "server.projects",
+      "settings.v3",
+      "tabs",
+      "workspace:followup",
+      "workspace:icon",
+      "workspace:model-selection",
+      "workspace:project",
+      "workspace:terminal",
+      "workspace:vcs",
+    ])
+  })
+
   test("group ids are unique", () => {
     expect(new Set(UI_STATE_GROUP_IDS).size).toBe(UI_STATE_GROUP_IDS.length)
     expect(new Set(UI_STATE_GROUPS.map((group) => group.id)).size).toBe(UI_STATE_GROUPS.length)
