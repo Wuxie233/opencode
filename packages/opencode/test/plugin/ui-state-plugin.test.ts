@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import path from "path"
-import { Effect, Layer } from "effect"
+import { Effect } from "effect"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import type { PluginRouteHandler, PluginStorage, PluginStorageRecord, PluginStorageScope } from "@opencode-ai/plugin"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
@@ -261,7 +262,7 @@ describe("ui-state plugin endpoints", () => {
 // Integration: drive the plugin over the REAL plugin storage seam backed by the
 // real Storage service, proving the persistence path is genuine end-to-end.
 const dir = path.join(Global.Path.data, "storage")
-const it = testEffect(Layer.mergeAll(Storage.defaultLayer, FSUtil.defaultLayer, CrossSpawnSpawner.defaultLayer))
+const it = testEffect(LayerNode.compile(LayerNode.group([Storage.node, FSUtil.node, CrossSpawnSpawner.node])))
 
 const realSetup = Effect.fnUntraced(function* (scope: string, worktree: string) {
   const fs = yield* FSUtil.Service

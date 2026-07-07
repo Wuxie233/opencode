@@ -85,10 +85,11 @@ export function migrateServerListState(value: unknown) {
 
 export function migrateServerProjectsState(value: unknown, canonicalLocalServer?: ServerConnection.Key): ServerProjectState {
   const migrated = migrateCanonicalLocalServerState(value, canonicalLocalServer)
-  if (!isRecord(migrated)) return { projects: {}, lastProject: {} }
+  if (!isRecord(migrated)) return { projects: {}, lastProject: {}, recentlyClosed: {} }
   return {
     projects: isRecord(migrated.projects) ? (migrated.projects as Record<string, StoredProject[]>) : {},
     lastProject: isRecord(migrated.lastProject) ? (migrated.lastProject as Record<string, string>) : {},
+    recentlyClosed: isRecord(migrated.recentlyClosed) ? (migrated.recentlyClosed as Record<string, string[]>) : {},
   }
 }
 

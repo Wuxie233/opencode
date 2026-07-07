@@ -211,7 +211,7 @@ const uiRoute = HttpRouter.use((router) =>
 const pluginRouterLayer = authorizationRouterMiddleware
   .combine(instanceRouterMiddleware)
   .combine(workspaceRouterMiddleware)
-  .layer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal), Layer.provide(ServerAuth.Config.defaultLayer))
+  .layer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal), Layer.provide(ServerAuth.Config.layer))
 
 const pluginRouteLayer = pluginRoute.pipe(Layer.provide(pluginRouterLayer))
 
