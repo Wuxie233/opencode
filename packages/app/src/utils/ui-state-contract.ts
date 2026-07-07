@@ -75,6 +75,13 @@ export const UI_STATE_GROUPS: readonly UiStateGroup[] = [
     notes: "context/layout.tsx Persist.serverGlobal(scope,'layout',['layout.v6']); sidebar/file-tree/session tabs/view/scroll.",
   },
   {
+    id: "layout.page",
+    scope: "global",
+    key: "layout.page",
+    hasMigrate: false,
+    notes: "pages/layout.tsx Persist.serverGlobal(scope,'layout.page',['layout.page.v1']); active project/workspace and sidebar ordering state.",
+  },
+  {
     id: "permission",
     scope: "global",
     key: "permission",
@@ -95,6 +102,41 @@ export const UI_STATE_GROUPS: readonly UiStateGroup[] = [
     hasMigrate: true,
     notes: "context/local.tsx Persist.serverWorkspace(scope,dir,'model-selection',['model-selection.v1']); per-worktree model/agent/variant via x-opencode-directory.",
   },
+  {
+    id: "workspace:vcs",
+    scope: "workspace",
+    key: "workspace:vcs",
+    hasMigrate: false,
+    notes: "context/global-sync/child-store.ts Persist.serverWorkspace(scope,dir,'vcs',['vcs.v1']); per-worktree git metadata cache.",
+  },
+  {
+    id: "workspace:project",
+    scope: "workspace",
+    key: "workspace:project",
+    hasMigrate: false,
+    notes: "context/global-sync/child-store.ts Persist.serverWorkspace(scope,dir,'project',['project.v1']); per-worktree project metadata cache.",
+  },
+  {
+    id: "workspace:icon",
+    scope: "workspace",
+    key: "workspace:icon",
+    hasMigrate: false,
+    notes: "context/global-sync/child-store.ts Persist.serverWorkspace(scope,dir,'icon',['icon.v1']); per-worktree icon override cache.",
+  },
+  {
+    id: "workspace:terminal",
+    scope: "workspace",
+    key: "workspace:terminal",
+    hasMigrate: true,
+    notes: "context/terminal.tsx Persist.serverWorkspace(scope,dir,'terminal'); workspace terminal tab state.",
+  },
+  {
+    id: "workspace:followup",
+    scope: "workspace",
+    key: "workspace:followup",
+    hasMigrate: false,
+    notes: "pages/session.tsx Persist.serverWorkspace(scope,dir,'followup',['followup.v1']); follow-up item state keyed by session.",
+  },
 ]
 
 // Exact set of group ids this contract covers.
@@ -103,9 +145,15 @@ export const UI_STATE_GROUP_IDS = [
   "settings.v3",
   "tabs",
   "layout",
+  "layout.page",
   "permission",
   "notification",
   "workspace:model-selection",
+  "workspace:vcs",
+  "workspace:project",
+  "workspace:icon",
+  "workspace:terminal",
+  "workspace:followup",
 ] as const
 export type UiStateGroupId = (typeof UI_STATE_GROUP_IDS)[number]
 
