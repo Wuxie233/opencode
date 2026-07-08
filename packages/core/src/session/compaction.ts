@@ -15,15 +15,15 @@ const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
-## Objective
-- [one or two brief sentences describing what the user is trying to accomplish]
+## User Requests
+- [top-level user asks and important clarifications, preserving wording as closely as possible, or "(none visible)"]
 
-## Important Details
-- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or "(none)"]
+## Goal
+- [one brief sentence describing what should be done next]
 
 ## Work State
 ### Completed
-- [finished work, verified facts, or changes made; otherwise "(none)"]
+- [finished work, verified facts, changes made, and test/build results; otherwise "(none)"]
 
 ### Active
 - [current work, partial changes, or investigation state; otherwise "(none)"]
@@ -31,18 +31,33 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 ### Blocked
 - [blockers, failing commands, or unknowns; otherwise "(none)"]
 
+## Pending Tasks
+- [remaining concrete tasks or next logical actions; otherwise "(none)"]
+
+## Key Files
+- [workspace-relative file or directory path: why it matters, or "(none)"]
+
+## Important Decisions
+- [technical decisions, constraints, preferences, trade-offs, and why; otherwise "(none)"]
+
+## Explicit Constraints
+- [verbatim user or project constraints that remain relevant; otherwise "(none)"]
+
 ## Next Move
 1. [immediate concrete action, or "(none)"]
 2. [next action if known, or "(none)"]
 
-## Relevant Files
-- [file or directory path: why it matters, or "(none)"]
+## Continuation Context
+- [warnings, gotchas, exact context needed to continue, relevant commands, errors, URLs, or identifiers; otherwise "(none)"]
 </template>
 
 Rules:
 - Keep every section, even when empty.
-- Use terse bullets, not prose paragraphs.
-- Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
+- Use terse bullets, not prose paragraphs, except the single-sentence Goal.
+- Preserve exact file paths, symbols, commands, error strings, URLs, identifiers, decisions, verification results, and user constraints when known.
+- Use workspace-relative paths for files when possible.
+- Do not include secrets, API keys, tokens, cookies, or credentials.
+- Do not claim tests or builds passed unless the history shows that they did.
 - Do not mention the summary process or that context was compacted.`
 
 type Entry = {
