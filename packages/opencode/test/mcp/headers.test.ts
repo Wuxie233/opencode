@@ -6,6 +6,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect } from "effect"
 import { testEffect } from "../lib/effect"
 import { MCP } from "../../src/mcp/index"
+import { TestInstance } from "../fixture/fixture"
 
 const it = testEffect(LayerNode.compile(MCP.node))
 
@@ -43,6 +44,7 @@ describe("mcp.headers", () => {
     Effect.gen(function* () {
       const server = yield* serve
       const mcp = yield* MCP.Service
+      const test = yield* TestInstance
       const result = yield* mcp.add("test-server", {
         type: "remote",
         url: server.url,
@@ -57,6 +59,7 @@ describe("mcp.headers", () => {
       for (const headers of server.requests) {
         expect(headers.get("authorization")).toBe("Bearer test-token")
         expect(headers.get("x-custom-header")).toBe("custom-value")
+        expect(headers.get("x-opencode-directory")).toBe(test.directory)
       }
     }),
   )
@@ -65,6 +68,7 @@ describe("mcp.headers", () => {
     Effect.gen(function* () {
       const server = yield* serve
       const mcp = yield* MCP.Service
+      const test = yield* TestInstance
       const result = yield* mcp.add("test-server-no-oauth", {
         type: "remote",
         url: server.url,
@@ -78,14 +82,16 @@ describe("mcp.headers", () => {
       expect(server.requests.length).toBeGreaterThan(0)
       for (const headers of server.requests) {
         expect(headers.get("authorization")).toBe("Bearer test-token")
+        expect(headers.get("x-opencode-directory")).toBe(test.directory)
       }
     }),
   )
 
-  it.instance("no requestInit when headers are not provided", () =>
+  it.instance("directory header is passed when config headers are not provided", () =>
     Effect.gen(function* () {
       const server = yield* serve
       const mcp = yield* MCP.Service
+      const test = yield* TestInstance
       const result = yield* mcp.add("test-server-no-headers", {
         type: "remote",
         url: server.url,
@@ -96,6 +102,7 @@ describe("mcp.headers", () => {
       for (const headers of server.requests) {
         expect(headers.has("authorization")).toBe(false)
         expect(headers.has("x-custom-header")).toBe(false)
+        expect(headers.get("x-opencode-directory")).toBe(test.directory)
       }
     }),
   )
