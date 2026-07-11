@@ -43,6 +43,8 @@ export const dict = {
   "ui.sessionTurn.retry.attempt": "tentative n°{{attempt}}",
   "ui.sessionTurn.retry.attemptLine": "{{line}} - tentative n°{{attempt}}",
   "ui.sessionTurn.retry.geminiHot": "gemini est en surchauffe",
+  "ui.sessionTurn.retry.action": "Réessayer maintenant",
+  "ui.sessionTurn.retry.pending": "Nouvelle tentative...",
   "ui.sessionTurn.error.freeUsageExceeded": "Limite d'utilisation gratuite dépassée",
   "ui.sessionTurn.error.addCredits": "Ajouter des crédits",
 

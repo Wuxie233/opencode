@@ -16,6 +16,8 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { SessionProcessor } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
+import { SessionRetry } from "../../src/session/retry"
+import { SessionRetryControl } from "../../src/session/retry-control"
 import { SessionSummary } from "../../src/session/summary"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
@@ -173,6 +175,7 @@ const root = LayerNode.group([
   Database.node,
   EventV2Bridge.node,
   SessionStatus.node,
+  SessionRetryControl.node,
   CrossSpawnSpawner.node,
 ])
 const replacements = [
@@ -599,6 +602,131 @@ it.live("session.processor effect tests retry recognized structured json errors"
         expect(yield* llm.calls).toBe(2)
         expect(parts.some((part) => part.type === "text" && part.text === "after")).toBe(true)
         expect(handle.message.error).toBeUndefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests retry immediately when the active wait is woken", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const retry = yield* SessionRetryControl.Service
+        const status = yield* SessionStatus.Service
+
+        yield* llm.error(503, { error: "upstream unavailable" })
+        yield* llm.text("after wake")
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "retry now")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "retry now" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* waitFor(
+          status.get(chat.id).pipe(Effect.map((value) => (value.type === "retry" ? value : undefined))),
+          "timed out waiting for retry status",
+        )
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* retry.wake(chat.id)).toBe(true)
+
+        const exit = yield* Fiber.await(run).pipe(Effect.timeout("250 millis"))
+        const messages = yield* session.messages({ sessionID: chat.id })
+        const parts = yield* MessageV2.parts(msg.id)
+
+        expect(Exit.isSuccess(exit)).toBe(true)
+        expect(yield* llm.calls).toBe(2)
+        expect(messages.map((item) => item.info.id)).toEqual([parent.id, msg.id])
+        expect(parts.some((part) => part.type === "text" && part.text === "after wake")).toBe(true)
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests persist aborted errors when interrupted during retry backoff", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const status = yield* SessionStatus.Service
+
+        yield* llm.error(503, { error: "upstream unavailable" })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "interrupt retry")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "interrupt retry" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* waitFor(
+          status.get(chat.id).pipe(Effect.map((value) => (value.type === "retry" ? value : undefined))),
+          "timed out waiting for retry status",
+        )
+        expect(yield* llm.calls).toBe(1)
+        yield* Fiber.interrupt(run)
+
+        const exit = yield* Fiber.await(run)
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const state = yield* status.get(chat.id)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+        }
+        expect(handle.message.error?.name).toBe("MessageAbortedError")
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role === "assistant") {
+          expect(stored.info.error?.name).toBe("MessageAbortedError")
+          expect(stored.info.time.completed).toBeDefined()
+        }
+        expect(state).toMatchObject({ type: "idle" })
       }),
     { config: (url) => providerCfg(url) },
   ),

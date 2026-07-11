@@ -74,6 +74,7 @@ import { sessionTitle } from "@/utils/session-title"
 import { scheduleConnectedMeasure } from "./measure"
 import { createTimelineProjection } from "./projection"
 import { MessageComment, SummaryDiff, TimelineRow, TimelineRowMap } from "./rows"
+import { createSessionRetryAction } from "./session-retry-action"
 import { filterVirtualIndexes } from "./virtual-items"
 
 const emptyMessages: MessageType[] = []
@@ -644,6 +645,17 @@ export function MessageTimeline(props: {
     return language.t("common.requestFailed")
   }
 
+  const retryAction = createSessionRetryAction({
+    request: (sessionID) => sdk().client.session.retry({ sessionID }).then((result) => result.data ?? false),
+    onError: (err) => {
+      showToast({
+        title: language.t("common.requestFailed"),
+        description: errorMessage(err),
+      })
+    },
+  })
+  createEffect(() => retryAction.updateStatus(sessionStatus().type === "retry"))
+
   const shareMutation = useMutation(() => ({
     mutationFn: (id: string) => serverSDK().client.session.share({ sessionID: id }),
     onError: (err) => {
@@ -1201,7 +1213,16 @@ export function MessageTimeline(props: {
         return (
           <TimelineRowFrame row={retryRow}>
             <div data-slot="session-turn-message-container" class="w-full px-4 md:px-5">
-              <SessionRetry status={sessionStatus()} show={activeMessageID() === retryRow().userMessageID} />
+              <SessionRetry
+                status={sessionStatus()}
+                show={activeMessageID() === retryRow().userMessageID}
+                pending={retryAction.pending}
+                onRetry={() => {
+                  const id = sessionID()
+                  if (!id) return
+                  void retryAction.run(id)
+                }}
+              />
             </div>
           </TimelineRowFrame>
         )

@@ -68,6 +68,8 @@ export const dict: Record<string, string> = {
   "ui.sessionTurn.retry.attempt": "attempt #{{attempt}}",
   "ui.sessionTurn.retry.attemptLine": "{{line}} - attempt #{{attempt}}",
   "ui.sessionTurn.retry.geminiHot": "gemini is way too hot right now",
+  "ui.sessionTurn.retry.action": "Retry now",
+  "ui.sessionTurn.retry.pending": "Retrying...",
   "ui.sessionTurn.error.freeUsageExceeded": "Free usage exceeded",
   "ui.sessionTurn.error.addCredits": "Add credits",
 

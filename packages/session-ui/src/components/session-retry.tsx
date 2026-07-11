@@ -2,10 +2,16 @@ import { createEffect, createMemo, createSignal, on, onCleanup, Show } from "sol
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
 import { useI18n } from "@opencode-ai/ui/context/i18n"
 import { Card } from "@opencode-ai/ui/card"
+import { Button } from "@opencode-ai/ui/button"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { Spinner } from "@opencode-ai/ui/spinner"
 
-export function SessionRetry(props: { status: SessionStatus; show?: boolean }) {
+export function SessionRetry(props: {
+  status: SessionStatus
+  show?: boolean
+  onRetry?: () => void
+  pending?: boolean
+}) {
   const i18n = useI18n()
   const retry = createMemo(() => {
     if (props.status.type !== "retry") return
@@ -65,6 +71,24 @@ export function SessionRetry(props: { status: SessionStatus; show?: boolean }) {
                 </Tooltip>
               </Show>
               <Show when={info()}>{(line) => <div data-slot="session-turn-retry-info">{line()}</div>}</Show>
+              <Show when={props.onRetry}>
+                <div class="mt-2">
+                  <Button
+                    type="button"
+                    size="small"
+                    variant="secondary"
+                    class="min-h-11 md:min-h-6"
+                    disabled={props.pending}
+                    aria-busy={props.pending ? "true" : undefined}
+                    onClick={() => {
+                      if (props.pending) return
+                      props.onRetry?.()
+                    }}
+                  >
+                    {i18n.t(props.pending ? "ui.sessionTurn.retry.pending" : "ui.sessionTurn.retry.action")}
+                  </Button>
+                </div>
+              </Show>
             </div>
           </div>
         </Card>
