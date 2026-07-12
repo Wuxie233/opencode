@@ -11,3 +11,4 @@
 - Do not enforce machine-dependent performance thresholds.
 - Assert scenario completion and metric collection only.
 - Keep normal test discovery free of manual benchmarks.
+- Seed app state through the current persisted keys and keep mock servers compatible with the server-backed Web State contract. Legacy raw settings, project, or tab keys can leave Home benchmarks running against an empty fixture without an explicit request failure.

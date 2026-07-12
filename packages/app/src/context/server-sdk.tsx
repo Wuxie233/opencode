@@ -17,6 +17,17 @@ const isAbortError = (error: unknown) =>
 const isStreamClosed = (error: unknown, signal?: AbortSignal) => isAbortError(error) || signal?.aborted === true
 type QueuedServerEvent = { directory: string; payload: Event }
 
+const RECONNECT_BASE_DELAY_MS = 250
+const RECONNECT_MAX_DELAY_MS = 10_000
+
+export function serverReconnectDelay(attempt: number, random = Math.random) {
+  const retry = Math.max(0, Math.floor(attempt))
+  const ceiling = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** Math.min(retry, 16), RECONNECT_MAX_DELAY_MS)
+  const floor = retry === 0 ? RECONNECT_BASE_DELAY_MS : Math.ceil(ceiling / 2)
+  const jitter = Math.min(1, Math.max(0, random()))
+  return Math.round(floor + (ceiling - floor) * jitter)
+}
+
 const coalescedKey = (event: QueuedServerEvent) => {
   if (event.payload.type === "lsp.updated") return `lsp.updated:${event.directory}`
   if (event.payload.type === "message.part.updated") {
@@ -76,6 +87,10 @@ export function resumeStreamAfterPageShow(event: PageTransitionEvent, start: () 
   start()
 }
 
+export const serverEventStreamOptions = {
+  sseMaxRetryAttempts: 1,
+} as const
+
 function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerScope) {
   const platform = usePlatform()
   const abort = new AbortController()
@@ -103,7 +118,6 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
   type Queued = QueuedServerEvent
   const FLUSH_FRAME_MS = 16
   const STREAM_YIELD_MS = 8
-  const RECONNECT_DELAY_MS = 250
 
   let queue: Queued[] = []
   let buffer: Queued[] = []
@@ -138,6 +152,18 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
 
   let streamErrorLogged = false
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+  let releaseReconnect: (() => void) | undefined
+  const waitForReconnect = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(finish, ms)
+      function finish() {
+        clearTimeout(timer)
+        if (releaseReconnect === finish) releaseReconnect = undefined
+        resolve()
+      }
+      releaseReconnect = finish
+    })
+  const wakeReconnect = () => releaseReconnect?.()
   let attempt: AbortController | undefined
   let run: Promise<void> | undefined
   let started = false
@@ -165,10 +191,12 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     const previous = run
     const current = (async () => {
       if (previous) await previous
+      let reconnectAttempt = 0
       // oxlint-disable-next-line no-unmodified-loop-condition -- `started` is set to false by stop() which also aborts; both flags are checked to allow graceful exit
       while (!abort.signal.aborted && started && generation === active) {
         attempt = new AbortController()
         lastEventAt = Date.now()
+        let connected = false
         const onAbort = () => {
           attempt?.abort()
         }
@@ -176,6 +204,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
         try {
           const events = await eventSdk.global.event({
             signal: attempt.signal,
+            ...serverEventStreamOptions,
             onSseError: (error) => {
               if (isStreamClosed(error, attempt?.signal)) return
               if (streamErrorLogged) return
@@ -190,6 +219,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
           let yielded = Date.now()
           resetHeartbeat()
           for await (const event of events.stream) {
+            connected = true
             resetHeartbeat()
             streamErrorLogged = false
             if (event.payload.type !== "sync") {
@@ -218,7 +248,9 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
         }
 
         if (abort.signal.aborted || !started || generation !== active) return
-        await wait(RECONNECT_DELAY_MS)
+        const delay = serverReconnectDelay(connected ? 0 : reconnectAttempt)
+        reconnectAttempt = connected ? 0 : reconnectAttempt + 1
+        await waitForReconnect(delay)
       }
     })().finally(() => {
       if (run !== current) return
@@ -233,6 +265,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     started = false
     generation++
     attempt?.abort()
+    wakeReconnect()
     clearHeartbeat()
   }
 
@@ -242,6 +275,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     makeEventListener(document, "visibilitychange", () => {
       if (document.visibilityState !== "visible") return
       if (!started) return
+      wakeReconnect()
       if (Date.now() - lastEventAt < HEARTBEAT_TIMEOUT_MS) return
       attempt?.abort()
     })

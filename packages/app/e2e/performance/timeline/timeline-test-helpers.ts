@@ -6,7 +6,7 @@ import { fixture, pageMessages } from "./session-timeline-stress.fixture"
 export async function installTimelineSettings(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem(
-      "settings.v3",
+      "opencode.global.dat:settings.v3",
       JSON.stringify({
         general: {
           newLayoutDesigns: true,
@@ -42,14 +42,15 @@ export async function installStressSessionTabs(page: Page, input?: { draftID?: s
   await page.addInitScript(
     ({ directory, sessionIDs, dirBase64, server, draftID }) => {
       localStorage.setItem(
-        "opencode.global.dat:server",
+        "opencode.global.dat:server.projects",
         JSON.stringify({
           projects: { local: [{ worktree: directory, expanded: true }] },
           lastProject: { local: directory },
+          recentlyClosed: {},
         }),
       )
       localStorage.setItem(
-        "opencode.window.browser.dat:tabs",
+        "opencode.global.dat:tabs",
         JSON.stringify([
           ...sessionIDs.map((sessionId) => ({
             type: "session",
@@ -69,6 +70,15 @@ export async function installStressSessionTabs(page: Page, input?: { draftID?: s
       draftID: input?.draftID,
     },
   )
+}
+
+export async function installOpenReviewPanel(page: Page) {
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "opencode.global.dat:layout",
+      JSON.stringify({ review: { diffStyle: "split", panelOpened: true } }),
+    )
+  })
 }
 
 export function stressSessionHref(sessionID: string) {

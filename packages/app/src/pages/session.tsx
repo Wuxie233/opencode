@@ -584,7 +584,9 @@ export default function Page() {
     ...sessionViewState(),
     newSessionWorktree: "main",
     deferRender: false,
+    timelineMountKey: undefined as string | undefined,
   })
+  const mobileChanges = createMemo(() => !isDesktop() && store.mobileTab === "changes")
 
   const [followup, setFollowup] = persisted(
     Persist.serverWorkspace(serverSDK().scope, sdk().directory, "followup", ["followup.v1"]),
@@ -601,17 +603,44 @@ export default function Page() {
     }),
   )
 
+  let deferredRenderFrame: number | undefined
+  let deferredRenderTimer: number | undefined
+  const clearDeferredRender = () => {
+    if (deferredRenderFrame !== undefined) cancelAnimationFrame(deferredRenderFrame)
+    if (deferredRenderTimer !== undefined) window.clearTimeout(deferredRenderTimer)
+    deferredRenderFrame = undefined
+    deferredRenderTimer = undefined
+  }
+
+  const releaseDeferredRender = () => {
+    clearDeferredRender()
+    const owner = sessionOwnership.capture()
+    deferredRenderFrame = requestAnimationFrame(() => {
+      deferredRenderFrame = requestAnimationFrame(() => {
+        deferredRenderFrame = undefined
+        deferredRenderTimer = window.setTimeout(() => {
+          deferredRenderTimer = undefined
+          owner.run(() => setStore("deferRender", false))
+        }, 0)
+      })
+    })
+  }
+
   createComputed((prev) => {
     const key = sessionKey()
     if (key !== prev) {
+      clearDeferredRender()
       setStore("deferRender", true)
-      const owner = sessionOwnership.capture()
-      requestAnimationFrame(() => {
-        setTimeout(() => owner.run(() => setStore("deferRender", false)), 0)
-      })
     }
     return key
   })
+  createEffect(() => {
+    const key = sessionKey()
+    if (!store.deferRender) return
+    if (params.id && !mobileChanges() && store.timelineMountKey !== key) return
+    releaseDeferredRender()
+  })
+  onCleanup(clearDeferredRender)
 
   let reviewFrame: number | undefined
   let todoFrame: number | undefined
@@ -648,7 +677,6 @@ export default function Page() {
     list.push("turn")
     return list
   })
-  const mobileChanges = createMemo(() => !isDesktop() && store.mobileTab === "changes")
   const wantsReview = createMemo(() =>
     isDesktop()
       ? desktopFileTreeOpen() || (desktopReviewOpen() && activeTab() === "review")
@@ -2159,6 +2187,7 @@ export default function Page() {
                   centered={centered()}
                   setContentRef={(el) => {
                     content = el
+                    setStore("timelineMountKey", sessionKey())
                     autoScroll.contentRef(el)
 
                     const root = scroller

@@ -66,6 +66,7 @@ import { Persist, persisted } from "@/utils/persist"
 import { useMarked } from "@opencode-ai/ui/context/marked"
 import { preloadMarkdown } from "@opencode-ai/session-ui/markdown-cache"
 import { archiveHomeSession } from "./home-session-archive"
+import { loadHomeSessions } from "./home-session-load"
 import { shouldOpenSessionInBackground } from "./home-session-open"
 import { showToast } from "@/utils/toast"
 import { fileManagerApp } from "@/utils/file-manager"
@@ -317,17 +318,19 @@ export function NewHome() {
     }
     return language.t("home.sessions.search.placeholder")
   })
-  const sessionLoad = useQuery(() => ({
-    queryKey: ["home", "sessions", selection().server, ...projectDirectories()] as const,
-    queryFn: async () => {
-      await Promise.all(
-        projectDirectories().map((directory) =>
-          focusedSync().project.loadSessions(directory, { limit: HOME_SESSION_LIMIT }),
-        ),
-      )
-      return null
-    },
-  }))
+  const sessionLoad = useQuery(() => {
+    const directories = projectDirectories()
+    const project = focusedSync().project
+    return {
+      queryKey: ["home", "sessions", selection().server, ...directories] as const,
+      queryFn: async () => {
+        await loadHomeSessions(directories, (directory) =>
+          project.loadSessions(directory, { limit: HOME_SESSION_LIMIT }),
+        )
+        return null
+      },
+    }
+  })
 
   const projectByID = createMemo(
     () => new Map(projects().flatMap((project) => (project.id ? [[project.id, project] as const] : []))),

@@ -2,6 +2,13 @@ import type { Page, Route } from "@playwright/test"
 
 const emptyList = new Set(["/skill", "/command", "/lsp", "/formatter", "/vcs/status", "/vcs/diff"])
 const emptyObject = new Set(["/global/config", "/config", "/provider/auth", "/mcp", "/experimental/resource"])
+const webStatePrefix = "/api/plugin/opencode.web-state/state/"
+
+type WebStateRecord = {
+  value: unknown
+  version: string
+  updated_at: number
+}
 
 export interface MockServerConfig {
   provider: unknown
@@ -28,6 +35,7 @@ export interface MockServerConfig {
 
 export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
   const cursors = new Map<string, string>()
+  const webState = new Map<string, WebStateRecord>()
   let nextCursor = 0
   const staticRoutes: Record<string, unknown> = {
     "/provider": config.provider,
@@ -54,6 +62,22 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
     if (url.port !== targetPort && url.port !== appPort) return route.fallback()
 
     const path = url.pathname
+    if (path.startsWith(webStatePrefix)) {
+      const request = route.request()
+      if (request.method() === "OPTIONS") return json(route, null)
+      const group = decodeURIComponent(path.slice(webStatePrefix.length))
+      const directory = request.headers()["x-opencode-directory"]
+      const key = directory ? `${group}\0${directory}` : group
+      const current = webState.get(key) ?? { value: null, version: "v1", updated_at: 0 }
+      if (request.method() === "GET") return json(route, current)
+      if (request.method() !== "PUT") return json(route, { error: "method_not_allowed" }, undefined, 405)
+
+      const record = request.postDataJSON() as unknown
+      if (!isWebStateRecord(record)) return json(route, { error: "invalid_record" }, undefined, 400)
+      const applied = record.updated_at > current.updated_at
+      if (applied) webState.set(key, record)
+      return json(route, { applied, ...(applied ? record : current) })
+    }
     if (path === "/global/event" || path === "/event") return sse(route, config.events?.(), config.eventRetry)
     if (path === "/global/health") return json(route, { healthy: true })
     if (path === "/experimental/capabilities") return json(route, { backgroundSubagents: false })
@@ -138,11 +162,21 @@ function json(route: Route, body: unknown, headers?: Record<string, string>, sta
     contentType: "application/json",
     headers: {
       "access-control-allow-origin": "*",
+      "access-control-allow-methods": "GET,PUT,OPTIONS",
+      "access-control-allow-headers": "authorization,content-type,x-opencode-directory",
       "access-control-expose-headers": "x-next-cursor",
       ...headers,
     },
     body: JSON.stringify(body ?? null),
   })
+}
+
+function isWebStateRecord(input: unknown): input is WebStateRecord {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return false
+  if (!("value" in input)) return false
+  if (!("version" in input) || input.version !== "v1") return false
+  if (!("updated_at" in input) || typeof input.updated_at !== "number") return false
+  return Number.isFinite(input.updated_at) && input.updated_at >= 0
 }
 
 function sse(route: Route, events?: unknown[], retry?: number) {

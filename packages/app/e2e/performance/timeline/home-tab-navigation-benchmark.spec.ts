@@ -3,6 +3,8 @@ import { expectSessionTitle } from "../../utils/waits"
 import { measureNavigationMilestones } from "./navigation-milestones"
 import { fixture } from "./session-timeline-stress.fixture"
 import {
+  createReviewDiffs,
+  installOpenReviewPanel,
   installStressSessionTabs,
   installTimelineSettings,
   mockStressTimeline,
@@ -12,6 +14,7 @@ import { waitForStableTimeline } from "./session-tab-switch-probe"
 
 const homeRow = '[data-component="home-session-row"]'
 const homeShell = '[data-component="home-session-search"]'
+const review = '[data-component="session-review-v2"]'
 
 benchmark.describe("performance: home and tab navigation", () => {
   benchmark("opens a home session and paints its titlebar tab", async ({ page, report }) => {
@@ -38,23 +41,24 @@ benchmark.describe("performance: home and tab navigation", () => {
   })
 
   benchmark("stages the review body after cold session content", async ({ page, report }) => {
-    await setup(page, [])
+    await setup(page, [], createReviewDiffs())
+    await installOpenReviewPanel(page)
     await page.goto("/")
     const row = page.locator(homeRow).filter({ hasText: fixture.expected.targetTitle }).first()
     await expect(row).toBeVisible()
     const result = await page.evaluate(
-      ({ rowSelector, title, contentSelector }) =>
+      ({ rowSelector, title, contentSelector, reviewSelector }) =>
         new Promise<{ contentBeforeReview: boolean; samples: number }>((resolve) => {
           let samples = 0
           const sample = () => {
             samples++
             const content = !!document.querySelector(contentSelector)
-            const review = !!document.querySelector('[data-component="session-review"]')
-            if (content && !review) {
+            const reviewVisible = !!document.querySelector(reviewSelector)
+            if (content && !reviewVisible) {
               resolve({ contentBeforeReview: true, samples })
               return
             }
-            if (content && review) {
+            if (content && reviewVisible) {
               resolve({ contentBeforeReview: false, samples })
               return
             }
@@ -71,11 +75,12 @@ benchmark.describe("performance: home and tab navigation", () => {
         rowSelector: homeRow,
         title: fixture.expected.targetTitle,
         contentSelector: messageSelector(fixture.expected.targetMessageIDs.at(-1)!),
+        reviewSelector: review,
       },
     )
     report(result)
     expect(result.contentBeforeReview).toBe(true)
-    await expect(page.locator('[data-component="session-review"]')).toBeVisible()
+    await expect(page.locator(review)).toBeVisible()
   })
 
   benchmark("closes the only session tab and paints home", async ({ page, report }) => {
@@ -103,8 +108,8 @@ benchmark.describe("performance: home and tab navigation", () => {
   })
 })
 
-async function setup(page: Parameters<typeof mockStressTimeline>[0], sessionIDs: string[]) {
-  await mockStressTimeline(page)
+async function setup(page: Parameters<typeof mockStressTimeline>[0], sessionIDs: string[], vcsDiff?: unknown[]) {
+  await mockStressTimeline(page, { vcsDiff })
   await installTimelineSettings(page)
   await installStressSessionTabs(page, { sessionIDs })
 }

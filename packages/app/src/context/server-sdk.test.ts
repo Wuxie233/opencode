@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { coalesceServerEvents, enqueueServerEvent, resumeStreamAfterPageShow } from "./server-sdk"
+import {
+  coalesceServerEvents,
+  enqueueServerEvent,
+  resumeStreamAfterPageShow,
+  serverEventStreamOptions,
+  serverReconnectDelay,
+} from "./server-sdk"
 import type { Event } from "@opencode-ai/sdk/v2/client"
 
 describe("resumeStreamAfterPageShow", () => {
@@ -11,6 +17,26 @@ describe("resumeStreamAfterPageShow", () => {
     resumeStreamAfterPageShow({ persisted: true } as PageTransitionEvent, start)
 
     expect(starts).toBe(1)
+  })
+})
+
+describe("serverReconnectDelay", () => {
+  test("lets the outer reconnect loop own SSE retries", () => {
+    expect(serverEventStreamOptions).toEqual({ sseMaxRetryAttempts: 1 })
+  })
+
+  test("keeps the first retry at the existing delay", () => {
+    expect(serverReconnectDelay(0, () => 0)).toBe(250)
+    expect(serverReconnectDelay(0, () => 1)).toBe(250)
+  })
+
+  test("backs off repeated failures with bounded jitter", () => {
+    expect(serverReconnectDelay(1, () => 0)).toBe(250)
+    expect(serverReconnectDelay(1, () => 1)).toBe(500)
+    expect(serverReconnectDelay(2, () => 0)).toBe(500)
+    expect(serverReconnectDelay(2, () => 1)).toBe(1_000)
+    expect(serverReconnectDelay(20, () => 0)).toBe(5_000)
+    expect(serverReconnectDelay(20, () => 1)).toBe(10_000)
   })
 })
 
