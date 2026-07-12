@@ -19,6 +19,7 @@ type QueuedServerEvent = { directory: string; payload: Event }
 
 const RECONNECT_BASE_DELAY_MS = 250
 const RECONNECT_MAX_DELAY_MS = 10_000
+const RECONNECT_STABLE_MS = 5_000
 
 export function serverReconnectDelay(attempt: number, random = Math.random) {
   const retry = Math.max(0, Math.floor(attempt))
@@ -26,6 +27,52 @@ export function serverReconnectDelay(attempt: number, random = Math.random) {
   const floor = retry === 0 ? RECONNECT_BASE_DELAY_MS : Math.ceil(ceiling / 2)
   const jitter = Math.min(1, Math.max(0, random()))
   return Math.round(floor + (ceiling - floor) * jitter)
+}
+
+export function serverConnectionStable(connectedAt: number | undefined, now = Date.now()) {
+  return connectedAt !== undefined && now - connectedAt >= RECONNECT_STABLE_MS
+}
+
+export function createServerConnectionTracker(now = Date.now) {
+  let connectedAt: number | undefined
+  return {
+    event: () => {
+      connectedAt ??= now()
+    },
+    stable: () => serverConnectionStable(connectedAt, now()),
+  }
+}
+
+export async function runServerReconnectLoop(input: {
+  active: () => boolean
+  connect: () => Promise<boolean>
+  wait: (ms: number) => Promise<void>
+  random?: () => number
+}) {
+  let reconnectAttempt = 0
+  while (input.active()) {
+    const stable = await input.connect()
+    if (!input.active()) return
+    await input.wait(serverReconnectDelay(stable ? 0 : reconnectAttempt, input.random))
+    reconnectAttempt = stable ? 0 : reconnectAttempt + 1
+  }
+}
+
+export function createReconnectWait() {
+  let release: (() => void) | undefined
+  return {
+    wait: (ms: number) =>
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(finish, ms)
+        function finish() {
+          clearTimeout(timer)
+          if (release === finish) release = undefined
+          resolve()
+        }
+        release = finish
+      }),
+    wake: () => release?.(),
+  }
 }
 
 const coalescedKey = (event: QueuedServerEvent) => {
@@ -152,18 +199,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
 
   let streamErrorLogged = false
   const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-  let releaseReconnect: (() => void) | undefined
-  const waitForReconnect = (ms: number) =>
-    new Promise<void>((resolve) => {
-      const timer = setTimeout(finish, ms)
-      function finish() {
-        clearTimeout(timer)
-        if (releaseReconnect === finish) releaseReconnect = undefined
-        resolve()
-      }
-      releaseReconnect = finish
-    })
-  const wakeReconnect = () => releaseReconnect?.()
+  const reconnect = createReconnectWait()
   let attempt: AbortController | undefined
   let run: Promise<void> | undefined
   let started = false
@@ -191,67 +227,66 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     const previous = run
     const current = (async () => {
       if (previous) await previous
-      let reconnectAttempt = 0
-      // oxlint-disable-next-line no-unmodified-loop-condition -- `started` is set to false by stop() which also aborts; both flags are checked to allow graceful exit
-      while (!abort.signal.aborted && started && generation === active) {
-        attempt = new AbortController()
-        lastEventAt = Date.now()
-        let connected = false
-        const onAbort = () => {
-          attempt?.abort()
-        }
-        abort.signal.addEventListener("abort", onAbort)
-        try {
-          const events = await eventSdk.global.event({
-            signal: attempt.signal,
-            ...serverEventStreamOptions,
-            onSseError: (error) => {
-              if (isStreamClosed(error, attempt?.signal)) return
-              if (streamErrorLogged) return
+      await runServerReconnectLoop({
+        active: () => !abort.signal.aborted && started && generation === active,
+        wait: reconnect.wait,
+        connect: async () => {
+          attempt = new AbortController()
+          lastEventAt = Date.now()
+          const connection = createServerConnectionTracker()
+          const onAbort = () => {
+            attempt?.abort()
+          }
+          abort.signal.addEventListener("abort", onAbort)
+          try {
+            const events = await eventSdk.global.event({
+              signal: attempt.signal,
+              ...serverEventStreamOptions,
+              onSseError: (error) => {
+                if (isStreamClosed(error, attempt?.signal)) return
+                if (streamErrorLogged) return
+                streamErrorLogged = true
+                console.error("[global-sdk] event stream error", {
+                  url: server.http.url,
+                  fetch: eventFetch ? "platform" : "webview",
+                  error,
+                })
+              },
+            })
+            let yielded = Date.now()
+            resetHeartbeat()
+            for await (const event of events.stream) {
+              connection.event()
+              resetHeartbeat()
+              streamErrorLogged = false
+              if (event.payload.type !== "sync") {
+                const directory = event.directory ?? "global"
+                const payload = event.payload as Event
+                if (enqueueServerEvent(queue, { directory, payload })) schedule()
+              }
+
+              if (Date.now() - yielded < STREAM_YIELD_MS) continue
+              yielded = Date.now()
+              await wait(0)
+            }
+          } catch (error) {
+            if (!isStreamClosed(error, attempt?.signal) && !streamErrorLogged) {
               streamErrorLogged = true
-              console.error("[global-sdk] event stream error", {
+              console.error("[global-sdk] event stream failed", {
                 url: server.http.url,
                 fetch: eventFetch ? "platform" : "webview",
                 error,
               })
-            },
-          })
-          let yielded = Date.now()
-          resetHeartbeat()
-          for await (const event of events.stream) {
-            connected = true
-            resetHeartbeat()
-            streamErrorLogged = false
-            if (event.payload.type !== "sync") {
-              const directory = event.directory ?? "global"
-              const payload = event.payload as Event
-              if (enqueueServerEvent(queue, { directory, payload })) schedule()
             }
-
-            if (Date.now() - yielded < STREAM_YIELD_MS) continue
-            yielded = Date.now()
-            await wait(0)
+          } finally {
+            abort.signal.removeEventListener("abort", onAbort)
+            attempt = undefined
+            clearHeartbeat()
           }
-        } catch (error) {
-          if (!isStreamClosed(error, attempt?.signal) && !streamErrorLogged) {
-            streamErrorLogged = true
-            console.error("[global-sdk] event stream failed", {
-              url: server.http.url,
-              fetch: eventFetch ? "platform" : "webview",
-              error,
-            })
-          }
-        } finally {
-          abort.signal.removeEventListener("abort", onAbort)
-          attempt = undefined
-          clearHeartbeat()
-        }
 
-        if (abort.signal.aborted || !started || generation !== active) return
-        const delay = serverReconnectDelay(connected ? 0 : reconnectAttempt)
-        reconnectAttempt = connected ? 0 : reconnectAttempt + 1
-        await waitForReconnect(delay)
-      }
+          return connection.stable()
+        },
+      })
     })().finally(() => {
       if (run !== current) return
       run = undefined
@@ -265,7 +300,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     started = false
     generation++
     attempt?.abort()
-    wakeReconnect()
+    reconnect.wake()
     clearHeartbeat()
   }
 
@@ -275,7 +310,7 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
     makeEventListener(document, "visibilitychange", () => {
       if (document.visibilityState !== "visible") return
       if (!started) return
-      wakeReconnect()
+      reconnect.wake()
       if (Date.now() - lastEventAt < HEARTBEAT_TIMEOUT_MS) return
       attempt?.abort()
     })

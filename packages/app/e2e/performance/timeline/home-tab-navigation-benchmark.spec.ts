@@ -47,18 +47,28 @@ benchmark.describe("performance: home and tab navigation", () => {
     const row = page.locator(homeRow).filter({ hasText: fixture.expected.targetTitle }).first()
     await expect(row).toBeVisible()
     const result = await page.evaluate(
-      ({ rowSelector, title, contentSelector, reviewSelector }) =>
-        new Promise<{ contentBeforeReview: boolean; samples: number }>((resolve) => {
+      ({ rowSelector, title, contentSelector, reviewSelector, timeoutMs }) =>
+        new Promise<{ contentBeforeReview: boolean; samples: number }>((resolve, reject) => {
           let samples = 0
+          let stopped = false
+          const timeout = window.setTimeout(() => {
+            stopped = true
+            reject(new Error(`Cold session content did not render within ${timeoutMs}ms`))
+          }, timeoutMs)
           const sample = () => {
+            if (stopped) return
             samples++
             const content = !!document.querySelector(contentSelector)
             const reviewVisible = !!document.querySelector(reviewSelector)
             if (content && !reviewVisible) {
+              stopped = true
+              clearTimeout(timeout)
               resolve({ contentBeforeReview: true, samples })
               return
             }
             if (content && reviewVisible) {
+              stopped = true
+              clearTimeout(timeout)
               resolve({ contentBeforeReview: false, samples })
               return
             }
@@ -76,6 +86,7 @@ benchmark.describe("performance: home and tab navigation", () => {
         title: fixture.expected.targetTitle,
         contentSelector: messageSelector(fixture.expected.targetMessageIDs.at(-1)!),
         reviewSelector: review,
+        timeoutMs: 10_000,
       },
     )
     report(result)

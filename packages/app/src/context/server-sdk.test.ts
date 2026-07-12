@@ -1,8 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import {
   coalesceServerEvents,
+  createReconnectWait,
+  createServerConnectionTracker,
   enqueueServerEvent,
   resumeStreamAfterPageShow,
+  runServerReconnectLoop,
+  serverConnectionStable,
   serverEventStreamOptions,
   serverReconnectDelay,
 } from "./server-sdk"
@@ -38,6 +42,74 @@ describe("serverReconnectDelay", () => {
     expect(serverReconnectDelay(20, () => 0)).toBe(5_000)
     expect(serverReconnectDelay(20, () => 1)).toBe(10_000)
   })
+})
+
+test("a connection must survive the handshake window before it resets backoff", () => {
+  expect(serverConnectionStable(undefined, 5_000)).toBe(false)
+  expect(serverConnectionStable(1_000, 5_999)).toBe(false)
+  expect(serverConnectionStable(1_000, 6_000)).toBe(true)
+})
+
+test("connection stability starts at the first SSE event instead of generator creation", () => {
+  let now = 10_000
+  const connection = createServerConnectionTracker(() => now)
+
+  now = 20_000
+  expect(connection.stable()).toBe(false)
+  connection.event()
+  now = 24_999
+  expect(connection.stable()).toBe(false)
+  now = 25_000
+  expect(connection.stable()).toBe(true)
+})
+
+describe("runServerReconnectLoop", () => {
+  test("backs off unstable streams and resets only after a stable stream", async () => {
+    const stable = [false, false, true, false]
+    const delays: number[] = []
+    let active = true
+
+    await runServerReconnectLoop({
+      active: () => active,
+      connect: async () => stable.shift() ?? false,
+      wait: async (ms) => {
+        delays.push(ms)
+        if (delays.length === 4) active = false
+      },
+      random: () => 1,
+    })
+
+    expect(delays).toEqual([250, 500, 250, 250])
+  })
+
+  test("does not schedule another retry after the stream is stopped", async () => {
+    let active = true
+    const delays: number[] = []
+
+    await runServerReconnectLoop({
+      active: () => active,
+      connect: async () => {
+        active = false
+        return false
+      },
+      wait: async (ms) => {
+        delays.push(ms)
+      },
+    })
+
+    expect(delays).toEqual([])
+  })
+})
+
+test("reconnect waits can be released by visibility and stop signals", async () => {
+  const reconnect = createReconnectWait()
+  const first = reconnect.wait(60_000)
+  reconnect.wake()
+  await first
+
+  const second = reconnect.wait(60_000)
+  reconnect.wake()
+  await second
 })
 
 describe("coalesceServerEvents", () => {

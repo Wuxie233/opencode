@@ -3,6 +3,25 @@ import type { Page, Route } from "@playwright/test"
 const emptyList = new Set(["/skill", "/command", "/lsp", "/formatter", "/vcs/status", "/vcs/diff"])
 const emptyObject = new Set(["/global/config", "/config", "/provider/auth", "/mcp", "/experimental/resource"])
 const webStatePrefix = "/api/plugin/opencode.web-state/state/"
+const webStateGroups = new Map<string, "global" | "workspace">([
+  ["server", "global"],
+  ["server.projects", "global"],
+  ["layout", "global"],
+  ["layout.page", "global"],
+  ["workspace:model-selection", "workspace"],
+  ["workspace:vcs", "workspace"],
+  ["workspace:project", "workspace"],
+  ["workspace:icon", "workspace"],
+  ["workspace:terminal", "workspace"],
+  ["workspace:followup", "workspace"],
+  ["settings.v3", "global"],
+  ["command.catalog.v1", "global"],
+  ["model", "global"],
+  ["language", "global"],
+  ["permission", "global"],
+  ["notification", "global"],
+  ["tabs", "global"],
+])
 
 type WebStateRecord = {
   value: unknown
@@ -64,10 +83,12 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
     const path = url.pathname
     if (path.startsWith(webStatePrefix)) {
       const request = route.request()
-      if (request.method() === "OPTIONS") return json(route, null)
       const group = decodeURIComponent(path.slice(webStatePrefix.length))
+      if (request.method() === "OPTIONS") return json(route, null)
+      const scope = webStateGroups.get(group)
+      if (!scope) return json(route, { error: "not_found" }, undefined, 404)
       const directory = request.headers()["x-opencode-directory"]
-      const key = directory ? `${group}\0${directory}` : group
+      const key = scope === "workspace" ? `${group}\0${directory ?? ""}` : group
       const current = webState.get(key) ?? { value: null, version: "v1", updated_at: 0 }
       if (request.method() === "GET") return json(route, current)
       if (request.method() !== "PUT") return json(route, { error: "method_not_allowed" }, undefined, 405)
@@ -174,7 +195,7 @@ function json(route: Route, body: unknown, headers?: Record<string, string>, sta
 function isWebStateRecord(input: unknown): input is WebStateRecord {
   if (!input || typeof input !== "object" || Array.isArray(input)) return false
   if (!("value" in input)) return false
-  if (!("version" in input) || input.version !== "v1") return false
+  if (!("version" in input) || typeof input.version !== "string" || input.version === "") return false
   if (!("updated_at" in input) || typeof input.updated_at !== "number") return false
   return Number.isFinite(input.updated_at) && input.updated_at >= 0
 }
