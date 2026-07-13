@@ -323,9 +323,11 @@ export function NewHome() {
     const project = focusedSync().project
     return {
       queryKey: ["home", "sessions", selection().server, ...directories] as const,
-      queryFn: async () => {
-        await loadHomeSessions(directories, (directory) =>
-          project.loadSessions(directory, { limit: HOME_SESSION_LIMIT }),
+      queryFn: async ({ signal }) => {
+        await loadHomeSessions(
+          directories,
+          (directory) => project.loadSessions(directory, { limit: HOME_SESSION_LIMIT }),
+          { signal },
         )
         return null
       },
@@ -613,7 +615,7 @@ export function NewHome() {
               </div>
             </Show>
             <Show
-              when={!sessionLoad.isLoading}
+              when={!sessionLoad.isLoading || groups().length > 0}
               fallback={
                 <div class="pt-3">
                   <HomeSessionSkeleton label={language.t("common.loading")} />
@@ -1259,7 +1261,7 @@ function HomeSessionSearch(props: {
             <div class="flex flex-col pt-9">
               <div id={HOME_SESSION_SEARCH_RESULTS_ID} role="listbox" class="flex flex-col gap-4 pt-4">
                 <Show
-                  when={!props.loading}
+                  when={!props.loading || props.results.length > 0}
                   fallback={
                     <div class="flex items-center justify-center px-4 py-3 text-v2-text-text-muted [font-weight:440]">
                       <Spinner class="size-4" />
