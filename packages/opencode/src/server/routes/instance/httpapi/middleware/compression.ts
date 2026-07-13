@@ -54,7 +54,20 @@ export const compressionLayer = HttpRouter.middleware<{ handles: unknown }>()((e
     const encoding = pickEncoding(request.headers["accept-encoding"])
     if (!encoding) return response
 
-    const compressed = encoding === "gzip" ? gzipSync(body.body) : deflateSync(body.body)
+    const compressed = yield* Effect.gen(function* () {
+      const result = encoding === "gzip" ? gzipSync(body.body) : deflateSync(body.body)
+      yield* Effect.annotateCurrentSpan({
+        "opencode.http.response.body.uncompressed_size": body.body.byteLength,
+        "opencode.http.response.body.compressed_size": result.byteLength,
+        "opencode.http.response.content_encoding": encoding,
+      })
+      return result
+    }).pipe(
+      Effect.withSpan("HttpApi.compress", {
+        attributes: { "http.request.method": request.method },
+      }, { captureStackTrace: false }),
+    )
+    yield* Effect.annotateCurrentSpan("http.response.body.size", compressed.byteLength)
     return HttpServerResponse.setHeader(
       HttpServerResponse.setBody(response, HttpBody.uint8Array(compressed, contentType)),
       "content-encoding",

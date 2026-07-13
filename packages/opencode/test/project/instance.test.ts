@@ -8,6 +8,7 @@ import { InstanceBootstrap } from "../../src/project/bootstrap"
 import { InstanceStore } from "../../src/project/instance-store"
 import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { ProcessPressure } from "../../src/observability/process-pressure"
 
 let bootstrapRun: Effect.Effect<void> = Effect.void
 const noopBootstrap = Layer.succeed(
@@ -47,6 +48,9 @@ describe("InstanceStore", () => {
 
       expect(ctx.directory).toBe(dir)
       expect(ctx.worktree).toBe(dir)
+      expect(ProcessPressure.snapshot().liveInstances).toBe(1)
+      yield* store.dispose(ctx)
+      expect(ProcessPressure.snapshot().liveInstances).toBe(0)
     }),
   )
 

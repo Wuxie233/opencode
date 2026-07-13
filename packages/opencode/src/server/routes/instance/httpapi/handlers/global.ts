@@ -12,6 +12,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
 import { GlobalUpgradeInput } from "../groups/global"
+import { ProcessPressure } from "@/observability/process-pressure"
 
 function eventData(data: unknown): Sse.Event {
   return {
@@ -72,6 +73,7 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
     const bridge = yield* EffectBridge.make()
 
     const health = Effect.fn("GlobalHttpApi.health")(function* () {
+      yield* ProcessPressure.annotate
       return { healthy: true as const, version: InstallationVersion }
     })
 

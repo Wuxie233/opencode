@@ -10,6 +10,7 @@ import { Context, Deferred, Duration, Effect, Exit, Layer, Scope } from "effect"
 import { type InstanceContext } from "./instance-context"
 import { InstanceBootstrap } from "./bootstrap-service"
 import * as Project from "./project"
+import { ProcessPressure } from "@/observability/process-pressure"
 
 export interface LoadInput {
   directory: string
@@ -41,6 +42,9 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     const bootstrap = yield* InstanceBootstrap.Service
     const scope = yield* Scope.Scope
     const cache = new Map<string, Entry>()
+    const liveInstances = ProcessPressure.registerLiveInstances()
+    const updateLiveCount = () => liveInstances.update(cache.size)
+    yield* Effect.addFinalizer(() => Effect.sync(liveInstances.close))
 
     const boot = (input: LoadInput & { directory: string }) =>
       Effect.gen(function* () {
@@ -66,6 +70,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       Effect.sync(() => {
         if (cache.get(directory) !== entry) return false
         cache.delete(directory)
+        updateLiveCount()
         return true
       })
 
@@ -102,6 +107,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       yield* disposeContext(ctx)
       if (cache.get(directory) !== entry) return false
       cache.delete(directory)
+      updateLiveCount()
       return true
     })
 
@@ -114,6 +120,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
 
           const entry: Entry = { deferred: Deferred.makeUnsafe<InstanceContext>() }
           cache.set(directory, entry)
+          updateLiveCount()
           yield* Effect.gen(function* () {
             yield* Effect.logInfo("creating instance", { directory: directory })
             yield* completeLoad(directory, input, entry)
@@ -130,6 +137,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
           const previous = cache.get(directory)
           const entry: Entry = { deferred: Deferred.makeUnsafe<InstanceContext>() }
           cache.set(directory, entry)
+          updateLiveCount()
           yield* Effect.gen(function* () {
             yield* Effect.logInfo("reloading instance", { directory: directory })
             if (previous) {
