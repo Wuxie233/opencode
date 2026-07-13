@@ -24,6 +24,7 @@
 - Home owns visible Session loading in the new layout; the new layout does not run the legacy all-project background preload.
 - Keep the legacy layout background preload bounded so it cannot fan out one request per project at startup.
 - Cancel queued directory dispatch when ownership changes, but let already-started shared `project.loadSessions` requests finish and populate the shared cache.
+- Keep `child(directory, { bootstrap: false })` metadata-only: creating a directory Store must not start path, provider, LSP, reference, or MCP requests until a real bootstrap enables them.
 
 ## Tool Calling
 

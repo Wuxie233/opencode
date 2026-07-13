@@ -56,13 +56,18 @@ beforeAll(async () => {
       querySingles.push(options)
       return {
         get isLoading() {
-          return options().queryKey?.[1] === "path"
+          return options().enabled === false || options().queryKey?.[1] === "path"
+        },
+        get isPending() {
+          return options().enabled === false || options().queryKey?.[1] === "path"
         },
         get data() {
+          if (options().enabled === false) throw new Error("disabled query data read")
           if (options().queryKey?.[1] === "path") throw new Error("pending path data read")
           if (options().queryKey?.[1] === "mcp") return options().enabled ? { demo: { status: "disabled" } } : undefined
           if (options().queryKey?.[1] === "lsp") return []
           if (options().queryKey?.[1] === "providers") return provider
+          if (options().queryKey?.[1] === "references") return []
           return undefined
         },
       }
@@ -168,6 +173,52 @@ describe("createChildStoreManager", () => {
 
       expect(store.path.directory).toBe("/project")
       expect(store.path.worktree).toBe("")
+    } finally {
+      dispose()
+    }
+  })
+
+  test("keeps metadata-only child stores offline until bootstrap", () => {
+    let manager: ReturnType<typeof createChildStoreManager> | undefined
+    const offset = querySingles.length
+
+    const dispose = createOwner((owner) => {
+      manager = createChildStoreManager({
+        owner,
+        scope: ServerScope.local,
+        persist,
+        isBooting: () => false,
+        isLoadingSessions: () => false,
+        onBootstrap() {},
+        onMcp() {},
+        onDispose() {},
+        translate: (key) => key,
+        queryOptions: queryOptionsApi,
+        global: { provider },
+      })
+    })
+
+    try {
+      if (!manager) throw new Error("manager required")
+
+      manager.child("/project", { bootstrap: false })
+      const queries = querySingles.slice(offset)
+      const [store] = manager.child("/project", { bootstrap: false })
+
+      expect(queries).toHaveLength(6)
+      expect(queries.map((query) => query().enabled)).toEqual([false, false, false, false, false, false])
+      expect(store.provider_ready).toBe(false)
+      expect(store.lsp_ready).toBe(false)
+      expect(store.path.directory).toBe("/project")
+      expect(store.reference).toEqual([])
+      expect(store.provider.all.size).toBe(0)
+      expect(store.lsp).toEqual([])
+
+      manager.child("/project")
+      expect(queries.map((query) => query().enabled)).toEqual([true, false, false, true, true, true])
+      expect(store.provider_ready).toBe(true)
+      expect(store.lsp_ready).toBe(true)
+      expect(store.path.directory).toBe("/project")
     } finally {
       dispose()
     }

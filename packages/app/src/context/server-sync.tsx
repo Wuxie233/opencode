@@ -337,6 +337,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     children.pin(key)
     const promise = Promise.resolve().then(async () => {
       const child = children.ensureChild(directory)
+      children.enableQueries(directory)
       const cache = children.vcsCache.get(key)
       if (!cache) return
       const sdk = sdkFor(directory)
