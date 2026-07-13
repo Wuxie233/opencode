@@ -23,7 +23,7 @@ test("shows sessions from a completed directory while another directory is still
   const requests = { slow: 0, completed: 0 }
   const limits = new Map<string, string[]>()
 
-  await setup(page, async (route, directory, url) => {
+  const metadataRequests = await setup(page, async (route, directory, url) => {
     limits.set(directory, [...(limits.get(directory) ?? []), url.searchParams.get("limit") ?? "unbounded"])
     if (directory === fastDirectory) return json(route, [sessions[0]])
     if (directory !== slowDirectory) return json(route, [])
@@ -47,6 +47,7 @@ test("shows sessions from a completed directory while another directory is still
   await expect(page.locator('[data-component="home-session-row"]', { hasText: slowTitle })).toBeVisible()
   expectHomeRequest(limits.get(fastDirectory))
   expectHomeRequest(limits.get(slowDirectory))
+  expect(metadataRequests).toEqual([])
 })
 
 function expectHomeRequest(limits: string[] | undefined) {
@@ -55,6 +56,7 @@ function expectHomeRequest(limits: string[] | undefined) {
 }
 
 async function setup(page: Page, listSessions: (route: Route, directory: string, url: URL) => Promise<void>) {
+  const metadataRequests: string[] = []
   await mockOpenCodeServer(page, {
     directory: fastDirectory,
     project: projects[0],
@@ -65,7 +67,31 @@ async function setup(page: Page, listSessions: (route: Route, directory: string,
 
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url())
-    const directory = url.searchParams.get("directory") ?? fastDirectory
+    const header = route.request().headers()["x-opencode-directory"]
+    const scopedDirectory = url.searchParams.get("directory") ?? (header ? decodeURIComponent(header) : undefined)
+    const directory = scopedDirectory ?? fastDirectory
+
+    if (
+      scopedDirectory &&
+      [
+        "/path",
+        "/provider",
+        "/lsp",
+        "/api/reference",
+        "/mcp",
+        "/experimental/resource",
+        "/agent",
+        "/config",
+        "/session/status",
+        "/project/current",
+        "/vcs",
+        "/permission",
+        "/question",
+        "/command",
+      ].includes(url.pathname)
+    ) {
+      metadataRequests.push(`${url.pathname}:${scopedDirectory}`)
+    }
 
     if (url.pathname === "/project") return json(route, projects)
     if (url.pathname === "/project/current") {
@@ -98,6 +124,8 @@ async function setup(page: Page, listSessions: (route: Route, directory: string,
     },
     [fastDirectory, slowDirectory],
   )
+
+  return metadataRequests
 }
 
 function project(id: string, worktree: string, name: string) {

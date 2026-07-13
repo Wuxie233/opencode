@@ -4,7 +4,6 @@ import {
   createEffect,
   createMemo,
   createResource,
-  createRoot,
   For,
   Match,
   on,
@@ -365,27 +364,19 @@ export function NewHome() {
         const key = `${ServerConnection.key(focusedServer()!)}\0${record.session.id}`
         if (prefetched.has(key)) return
         prefetched.add(key)
-        createRoot((dispose) => {
-          try {
-            const directory = ctx.sync.ensureDirSyncContext(record.session.directory)
-            void directory.session
-              .sync(record.session.id)
-              .then(() => {
-                return Promise.all(
-                  (ctx.sync.session.data.message[record.session.id] ?? []).flatMap((message) =>
-                    (ctx.sync.session.data.part[message.id] ?? []).flatMap((part) => {
-                      if (part.type !== "text" || !part.text) return []
-                      return preloadMarkdown(part.text, part.id, marked)
-                    }),
-                  ),
-                )
-              })
-              .catch(() => {})
-              .finally(dispose)
-          } catch {
-            dispose()
-          }
-        })
+        void ctx.sync.session
+          .sync(record.session.id)
+          .then(() => {
+            return Promise.all(
+              (ctx.sync.session.data.message[record.session.id] ?? []).flatMap((message) =>
+                (ctx.sync.session.data.part[message.id] ?? []).flatMap((part) => {
+                  if (part.type !== "text" || !part.text) return []
+                  return preloadMarkdown(part.text, part.id, marked)
+                }),
+              ),
+            )
+          })
+          .catch(() => {})
       })
   })
 
