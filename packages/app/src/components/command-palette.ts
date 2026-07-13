@@ -7,11 +7,13 @@ import { useCommand, type CommandOption } from "@/context/command"
 import { useFile } from "@/context/file"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
-import { useServerSDK, type ServerSDK } from "@/context/server-sdk"
+import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { createSessionTabs } from "@/pages/session/helpers"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { decode64 } from "@/utils/base64"
+import { createSessionEntries } from "./command-palette-session-load"
+import { createLatestSearch } from "./latest-search"
 
 export type CommandPaletteEntry = {
   id: string
@@ -86,6 +88,7 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
   const openFile = createCommandPaletteFileOpener(props.onOpenFile)
   const state = { cleanup: undefined as (() => void) | void, committed: false }
   const filesOnly = () => props.filesOnly?.() ?? false
+  const fileSearch = createLatestSearch((query, signal) => file.searchFiles(query, { signal }).catch(() => []))
 
   const allowedCommands = createMemo(() => {
     if (filesOnly()) return []
@@ -155,7 +158,7 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
     return dirs
   })
   const homedir = createMemo(() => serverSync().data.path.home)
-  const sessions = createSessionEntries({
+  const sessions: (text: string) => CommandPaletteEntry[] | Promise<CommandPaletteEntry[]> = createSessionEntries({
     workspaces,
     label: (directory) => {
       const current = project()
@@ -169,10 +172,14 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
       const name = store.vcs?.branch ?? getFilename(directory)
       return `${kind} : ${name || path}`
     },
-    load: (directory) => serverSDK.client.session.list({ directory, roots: true }),
+    load: (directory, signal) => serverSDK.client.session.list({ directory, roots: true }, { signal }),
     untitled: () => language.t("command.session.new"),
     category: () => language.t("command.category.session"),
   })
+  const clearSearch = () => {
+    fileSearch.stop()
+    sessions("")
+  }
 
   const highlight = (item: CommandPaletteEntry | undefined) => {
     state.cleanup?.()
@@ -200,6 +207,7 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
   }
 
   onCleanup(() => {
+    clearSearch()
     if (state.committed) return
     state.cleanup?.()
   })
@@ -207,6 +215,8 @@ export function createCommandPaletteModel(props: { filesOnly?: () => boolean; on
   return {
     language,
     file,
+    searchFiles: fileSearch.run,
+    clearSearch,
     commandEntries,
     preferredCommandEntries,
     recentFileEntries,
@@ -227,99 +237,5 @@ function createCommandEntry(option: CommandOption, category: string): CommandPal
     keybind: option.keybind,
     category,
     option,
-  }
-}
-
-function createSessionEntries(props: {
-  workspaces: () => string[]
-  label: (directory: string) => string
-  load: (directory: string) => ReturnType<ServerSDK["client"]["session"]["list"]>
-  untitled: () => string
-  category: () => string
-}) {
-  const state: {
-    token: number
-    inflight: Promise<CommandPaletteEntry[]> | undefined
-    cached: CommandPaletteEntry[] | undefined
-  } = { token: 0, inflight: undefined, cached: undefined }
-
-  return (text: string) => {
-    if (!text.trim()) {
-      state.token += 1
-      state.inflight = undefined
-      state.cached = undefined
-      return [] as CommandPaletteEntry[]
-    }
-    if (state.cached) return state.cached
-    if (state.inflight) return state.inflight
-
-    const current = state.token
-    const dirs = props.workspaces()
-    if (dirs.length === 0) return [] as CommandPaletteEntry[]
-
-    state.inflight = Promise.all(
-      dirs.map((directory) => {
-        const description = props.label(directory)
-        return props
-          .load(directory)
-          .then((result) =>
-            (result.data ?? [])
-              .filter((session) => !!session?.id)
-              .map((session) => ({
-                id: session.id,
-                title: session.title ?? props.untitled(),
-                description,
-                directory,
-                archived: session.time?.archived,
-                updated: session.time?.updated,
-              })),
-          )
-          .catch(() => [] as SessionEntryInput[])
-      }),
-    )
-      .then((results) => {
-        if (state.token !== current) return [] as CommandPaletteEntry[]
-        const seen = new Set<string>()
-        const next = results
-          .flat()
-          .filter((item) => {
-            const key = `${item.directory}:${item.id}`
-            if (seen.has(key)) return false
-            seen.add(key)
-            return true
-          })
-          .map((item) => createSessionEntry(item, props.category()))
-        state.cached = next
-        return next
-      })
-      .catch(() => [] as CommandPaletteEntry[])
-      .finally(() => {
-        state.inflight = undefined
-      })
-
-    return state.inflight
-  }
-}
-
-type SessionEntryInput = {
-  directory: string
-  id: string
-  title: string
-  description: string
-  archived?: number
-  updated?: number
-}
-
-function createSessionEntry(input: SessionEntryInput, category: string): CommandPaletteEntry {
-  return {
-    id: `session:${input.directory}:${input.id}`,
-    type: "session",
-    title: input.title,
-    description: input.description,
-    category,
-    directory: input.directory,
-    sessionID: input.id,
-    archived: input.archived,
-    updated: input.updated,
   }
 }

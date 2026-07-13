@@ -706,11 +706,12 @@ export default function Page() {
       queryKey: [...vcsKey(), mode] as const,
       enabled,
       queryFn: mode
-        ? () =>
+        ? ({ signal }) =>
             sdk()
-              .client.vcs.diff({ mode })
+              .client.vcs.diff({ mode }, { signal })
               .then((result) => list(result.data))
               .catch((error) => {
+                if (signal.aborted) throw error
                 console.debug("[session-review] failed to load vcs diff", { mode, error })
                 return []
               })

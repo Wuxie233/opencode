@@ -71,6 +71,7 @@ function DialogSelectFileLegacy(props: { filesOnly: () => boolean; onOpenFile?: 
   const items = async (text: string) => {
     const query = text.trim()
     setGrouped(query.length > 0)
+    if (!query) palette.clearSearch()
 
     if (!query && props.filesOnly()) {
       const loaded = palette.file.tree.state("")?.loaded
@@ -89,13 +90,13 @@ function DialogSelectFileLegacy(props: { filesOnly: () => boolean; onOpenFile?: 
     if (!query) return [...palette.preferredCommandEntries(), ...palette.recentFileEntries()]
 
     if (props.filesOnly()) {
-      const files = await palette.file.searchFiles(query)
+      const files = await palette.searchFiles(query)
       const category = palette.language.t("palette.group.files")
       return files.map((path) => createCommandPaletteFileEntry(path, category))
     }
 
     const [files, nextSessions] = await Promise.all([
-      palette.file.searchFiles(query),
+      palette.searchFiles(query),
       Promise.resolve(palette.sessions(query)),
     ])
     const category = palette.language.t("palette.group.files")
