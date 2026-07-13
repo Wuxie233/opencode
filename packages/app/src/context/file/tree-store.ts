@@ -12,7 +12,7 @@ type DirectoryState = {
 type TreeStoreOptions = {
   scope: () => string
   normalizeDir: (input: string) => string
-  list: (input: string) => Promise<FileNode[]>
+  list: (input: string, options: { signal: AbortSignal }) => Promise<FileNode[]>
   onError: (message: string) => void
 }
 
@@ -25,9 +25,12 @@ export function createFileTreeStore(options: TreeStoreOptions) {
     dir: { "": { expanded: true } },
   })
 
-  const inflight = new Map<string, Promise<void>>()
+  const inflight = new Map<string, { promise: Promise<void>; controller: AbortController }>()
+  let generation = 0
 
   const reset = () => {
+    generation += 1
+    for (const request of inflight.values()) request.controller.abort()
     inflight.clear()
     setTree("node", reconcile({}))
     setTree("dir", reconcile({}))
@@ -47,7 +50,7 @@ export function createFileTreeStore(options: TreeStoreOptions) {
     if (!opts?.force && current?.loaded) return Promise.resolve()
 
     const pending = inflight.get(dir)
-    if (pending) return pending
+    if (pending) return pending.promise
 
     setTree(
       "dir",
@@ -59,11 +62,13 @@ export function createFileTreeStore(options: TreeStoreOptions) {
     )
 
     const directory = options.scope()
+    const active = generation
+    const controller = new AbortController()
 
     const promise = options
-      .list(dir)
+      .list(dir, { signal: controller.signal })
       .then((nodes) => {
-        if (options.scope() !== directory) return
+        if (generation !== active || options.scope() !== directory) return
         const prevChildren = tree.dir[dir]?.children ?? []
         const nextChildren = nodes.map((node) => node.path)
         const nextSet = new Set(nextChildren)
@@ -108,7 +113,7 @@ export function createFileTreeStore(options: TreeStoreOptions) {
         )
       })
       .catch((e) => {
-        if (options.scope() !== directory) return
+        if (controller.signal.aborted || generation !== active || options.scope() !== directory) return
         setTree(
           "dir",
           dir,
@@ -120,10 +125,10 @@ export function createFileTreeStore(options: TreeStoreOptions) {
         options.onError(e.message)
       })
       .finally(() => {
-        inflight.delete(dir)
+        if (inflight.get(dir)?.promise === promise) inflight.delete(dir)
       })
 
-    inflight.set(dir, promise)
+    inflight.set(dir, { promise, controller })
     return promise
   }
 
