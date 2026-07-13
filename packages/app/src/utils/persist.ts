@@ -5,7 +5,7 @@ import { createSignal, type Accessor } from "solid-js"
 import type { SetStoreFunction, Store } from "solid-js/store"
 import { pathKey } from "@/utils/path-key"
 import { ScopedKey, ServerScope, type ServerScope as ServerScopeValue } from "@/utils/server-scope"
-import { UI_STATE_CONTRACT_VERSION } from "@/utils/ui-state-contract"
+import { UI_STATE_CONTRACT_VERSION, uiStateGroup } from "@/utils/ui-state-contract"
 import { resolveWebStateServer, webStateTransport } from "@/utils/web-state"
 
 type InitType = Promise<string> | string | null
@@ -815,7 +815,7 @@ export function persisted<T>(
     return api
   })()
 
-  const finalStorage = config.server && resolveWebStateServer(config.server.scope)
+  const finalStorage = config.server && uiStateGroup(config.server.group) && resolveWebStateServer(config.server.scope)
     ? serverBackedStorage({
         local: storage,
         transport: webStateTransport({ server: config.server }),

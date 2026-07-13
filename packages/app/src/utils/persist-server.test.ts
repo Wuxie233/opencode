@@ -14,6 +14,7 @@ type CountState = {
 
 const SCOPE = ServerScope.local
 const REMOTE_SCOPE = "https://remote.test" as ServerScopeValue
+const GROUP = "notification"
 
 const storage = new MemoryStorage()
 const server = new MockServerState()
@@ -78,7 +79,7 @@ function mount(input?: {
         key,
         legacy: input?.legacy,
         server: {
-          group: input?.group ?? "server",
+          group: input?.group ?? GROUP,
           scope: input?.scope ?? SCOPE,
           directory: input?.directory,
         },
@@ -103,7 +104,7 @@ async function flushPersistence() {
 
 describe("persist server hydrate", () => {
   test("server hydrate uses server state when local fallback is missing", async () => {
-    server.seed("server", { value: { count: 2 }, version: "v1", updated_at: 2 })
+    server.seed(GROUP, { value: { count: 2 }, version: "v1", updated_at: 2 })
 
     const result = mount()
     await waitReady(result)
@@ -118,7 +119,7 @@ describe("persist server hydrate", () => {
 
   test("server hydrate uses server when it is newer than local fallback", async () => {
     seedLocal("server-hydrate", { count: 1 }, 1)
-    server.seed("server", { value: { count: 3 }, version: "v1", updated_at: 2 })
+    server.seed(GROUP, { value: { count: 3 }, version: "v1", updated_at: 2 })
 
     const result = mount()
     await waitReady(result)
@@ -130,7 +131,7 @@ describe("persist server hydrate", () => {
 
   test("server hydrate keeps local fallback when local timestamp is newer", async () => {
     seedLocal("server-hydrate", { count: 5 }, 5)
-    server.seed("server", { value: { count: 4 }, version: "v1", updated_at: 4 })
+    server.seed(GROUP, { value: { count: 4 }, version: "v1", updated_at: 4 })
 
     const result = mount()
     await waitReady(result)
@@ -141,7 +142,7 @@ describe("persist server hydrate", () => {
   })
 
   test("local scope uses the registered canonical server resolver", async () => {
-    server.seed("server", { value: { count: 6 }, version: "v1", updated_at: 6 })
+    server.seed(GROUP, { value: { count: 6 }, version: "v1", updated_at: 6 })
 
     const result = mount({ key: "local-resolver" })
     await waitReady(result)
@@ -160,6 +161,20 @@ describe("persist server hydrate", () => {
     await flushPersistence()
 
     expect(result.state.count).toBe(9)
+    expect(server.calls.get).toBe(0)
+    expect(server.calls.put).toBe(0)
+    result.dispose()
+  })
+
+  test("unregistered groups stay local-only", async () => {
+    const result = mount({ key: "prompt-local-only", group: "workspace:prompt" })
+    await waitReady(result)
+
+    result.setState("count", 10)
+    await flushPersistence()
+
+    expect(result.state.count).toBe(10)
+    expect(storage.getItem("prompt-local-only")).toBe('{"count":10}')
     expect(server.calls.get).toBe(0)
     expect(server.calls.put).toBe(0)
     result.dispose()
@@ -188,7 +203,7 @@ describe("persist fallback", () => {
     await flushPersistence()
 
     expect(second.state.count).toBe(40)
-    expect(server.get("server")).toEqual({ value: { count: 40 }, version: "v1", updated_at: 40 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 40 }, version: "v1", updated_at: 40 })
     second.dispose()
   })
 
@@ -252,7 +267,7 @@ describe("persist fallback", () => {
     await flushPersistence()
 
     expect(storage.getItem("fallback")).toBe('{"count":11}')
-    expect(server.get("server")).toEqual({ value: { count: 11 }, version: "v1", updated_at: 10 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 11 }, version: "v1", updated_at: 10 })
     result.dispose()
   })
 
@@ -294,7 +309,7 @@ describe("persist migrate to server", () => {
 
     expect(result.state.count).toBe(21)
     expect(storage.getItem("migrate-first")).toBe('{"count":21}')
-    expect(server.get("server")).toEqual({ value: { count: 21 }, version: "v1", updated_at: 1_000 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 21 }, version: "v1", updated_at: 1_000 })
     expect(storage.getItem(persistTesting.serverMetadataKey("migrate-first"))).toBe(
       '{"value":null,"version":"v1","updated_at":1000}',
     )
@@ -318,7 +333,7 @@ describe("persist migrate to server", () => {
 
     expect(second.state.count).toBe(22)
     expect(server.calls.put).toBe(putsAfterFirst)
-    expect(server.get("server")).toEqual({ value: { count: 22 }, version: "v1", updated_at: 1_000 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 22 }, version: "v1", updated_at: 1_000 })
     second.dispose()
   })
 
@@ -332,20 +347,20 @@ describe("persist migrate to server", () => {
     expect(result.state.count).toBe(23)
     expect(storage.getItem("migrate-legacy")).toBe('{"count":23}')
     expect(storage.getItem("legacy.count")).toBeNull()
-    expect(server.get("server")).toEqual({ value: { count: 23 }, version: "v1", updated_at: 1_000 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 23 }, version: "v1", updated_at: 1_000 })
     result.dispose()
   })
 
   test("migrate to server overwrites an older server record with newer local state", async () => {
     seedLocal("migrate-older-server", { count: 25 }, 25)
-    server.seed("server", { value: { count: 24 }, version: "v1", updated_at: 24 })
+    server.seed(GROUP, { value: { count: 24 }, version: "v1", updated_at: 24 })
 
     const result = mount({ key: "migrate-older-server" })
     await waitReady(result)
     await flushPersistence()
 
     expect(result.state.count).toBe(25)
-    expect(server.get("server")).toEqual({ value: { count: 25 }, version: "v1", updated_at: 25 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 25 }, version: "v1", updated_at: 25 })
     result.dispose()
   })
 
@@ -368,7 +383,7 @@ describe("persist migrate to server", () => {
     await flushPersistence()
 
     expect(second.state.count).toBe(26)
-    expect(server.get("server")).toEqual({ value: { count: 26 }, version: "v1", updated_at: 1_000 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 26 }, version: "v1", updated_at: 1_000 })
     second.dispose()
   })
 })
@@ -376,7 +391,7 @@ describe("persist migrate to server", () => {
 describe("persist newer server", () => {
   test("stale local write restores the authoritative server fallback", async () => {
     seedLocal("stale-write", { count: 30 }, 30)
-    server.seed("server", { value: { count: 50 }, version: "v1", updated_at: 50 })
+    server.seed(GROUP, { value: { count: 50 }, version: "v1", updated_at: 50 })
 
     const result = mount({ key: "stale-write" })
     await waitReady(result)
@@ -385,7 +400,7 @@ describe("persist newer server", () => {
     result.setState("count", 40)
     await flushPersistence()
 
-    expect(server.get("server")).toEqual({ value: { count: 50 }, version: "v1", updated_at: 50 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 50 }, version: "v1", updated_at: 50 })
     expect(storage.getItem("stale-write")).toBe('{"count":50}')
     expect(storage.getItem(persistTesting.serverMetadataKey("stale-write"))).toBe(
       '{"value":null,"version":"v1","updated_at":50}',
@@ -395,7 +410,7 @@ describe("persist newer server", () => {
 
   test("equal timestamp local write restores the authoritative server fallback", async () => {
     seedLocal("equal-write", { count: 60 }, 60)
-    server.seed("server", { value: { count: 61 }, version: "v1", updated_at: 60 })
+    server.seed(GROUP, { value: { count: 61 }, version: "v1", updated_at: 60 })
 
     const result = mount({ key: "equal-write" })
     await waitReady(result)
@@ -404,14 +419,14 @@ describe("persist newer server", () => {
     result.setState("count", 62)
     await flushPersistence()
 
-    expect(server.get("server")).toEqual({ value: { count: 61 }, version: "v1", updated_at: 60 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 61 }, version: "v1", updated_at: 60 })
     expect(storage.getItem("equal-write")).toBe('{"count":61}')
     result.dispose()
   })
 
   test("newer server state wins over older local data and hydrates the store", async () => {
     seedLocal("newer-server-local", { count: 30 }, 30)
-    server.seed("server", { value: { count: 31 }, version: "v1", updated_at: 31 })
+    server.seed(GROUP, { value: { count: 31 }, version: "v1", updated_at: 31 })
 
     const result = mount({ key: "newer-server-local" })
     await waitReady(result)
@@ -419,20 +434,20 @@ describe("persist newer server", () => {
 
     expect(result.state.count).toBe(31)
     expect(storage.getItem("newer-server-local")).toBe('{"count":31}')
-    expect(server.get("server")).toEqual({ value: { count: 31 }, version: "v1", updated_at: 31 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 31 }, version: "v1", updated_at: 31 })
     result.dispose()
   })
 
   test("newer server state is preserved against an older local-only first-load upload", async () => {
     storage.setItem("newer-server-firstload", JSON.stringify({ count: 32 }))
-    server.seed("server", { value: { count: 33 }, version: "v1", updated_at: 33 })
+    server.seed(GROUP, { value: { count: 33 }, version: "v1", updated_at: 33 })
 
     const result = mount({ key: "newer-server-firstload" })
     await waitReady(result)
     await flushPersistence()
 
     expect(result.state.count).toBe(33)
-    expect(server.get("server")).toEqual({ value: { count: 33 }, version: "v1", updated_at: 33 })
+    expect(server.get(GROUP)).toEqual({ value: { count: 33 }, version: "v1", updated_at: 33 })
     result.dispose()
   })
 })
@@ -441,7 +456,7 @@ describe("persist directory routing", () => {
   test("workspace groups namespace server records by the x-opencode-directory header", async () => {
     const result = mount({
       key: "ws-demo",
-      group: "workspace:demo",
+      group: "workspace:vcs",
       directory: "/ws/a",
     })
     await waitReady(result)
@@ -450,12 +465,12 @@ describe("persist directory routing", () => {
     result.setState("count", 7)
     await flushPersistence()
 
-    expect(server.get(`workspace:demo/${encodeURIComponent("/ws/a")}`)).toEqual({
+    expect(server.get(`workspace:vcs/${encodeURIComponent("/ws/a")}`)).toEqual({
       value: { count: 7 },
       version: "v1",
       updated_at: 70,
     })
-    expect(server.get("workspace:demo")).toBeUndefined()
+    expect(server.get("workspace:vcs")).toBeUndefined()
     result.dispose()
   })
 })
