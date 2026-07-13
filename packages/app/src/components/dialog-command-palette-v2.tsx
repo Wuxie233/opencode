@@ -12,47 +12,50 @@ import { getRelativeTime } from "@/utils/time"
 import {
   createCommandPaletteFileEntry,
   createCommandPaletteModel,
-  uniqueCommandPaletteEntries,
   type CommandPaletteEntry,
 } from "./command-palette"
+import {
+  commandPaletteVisibleEntries,
+  groupCommandPaletteEntries,
+  matchesCommandPaletteEntry,
+  type RemoteCommandPaletteEntries,
+} from "./dialog-command-palette-v2-items"
 import "./dialog-command-palette-v2.css"
-
-function groups(entries: CommandPaletteEntry[]) {
-  const map = new Map<string, CommandPaletteEntry[]>()
-  for (const entry of entries) map.set(entry.category, [...(map.get(entry.category) ?? []), entry])
-  return Array.from(map.entries()).map(([category, entries]) => ({ category, entries }))
-}
-
-function matchesEntry(entry: CommandPaletteEntry, query: string) {
-  const value = query.toLowerCase()
-  return [entry.title, entry.description, entry.category].some((text) => text?.toLowerCase().includes(value))
-}
 
 export function DialogCommandPaletteV2(props: { onOpenFile?: (path: string) => void }) {
   const palette = createCommandPaletteModel(props)
   const [query, setQuery] = createSignal("")
   const [active, setActive] = createSignal(0)
 
-  const loadItems = async (text: string) => {
+  const localEntries = createMemo(() => {
+    const q = query().trim()
+    if (!q) return [...palette.preferredCommandEntries(), ...palette.recentFileEntries()]
+    return palette.commandEntries().filter((entry) => matchesCommandPaletteEntry(entry, q))
+  })
+
+  const loadRemoteItems = async (text: string): Promise<RemoteCommandPaletteEntries> => {
     const q = text.trim()
     if (!q) {
       palette.clearSearch()
-      return [...palette.preferredCommandEntries(), ...palette.recentFileEntries()]
+      return { query: q, entries: [] }
     }
 
     const [files, nextSessions] = await Promise.all([palette.searchFiles(q).catch(() => []), palette.sessions(q)])
     const category = palette.language.t("palette.group.files")
-    return [
-      ...palette.commandEntries().filter((entry) => matchesEntry(entry, q)),
-      ...nextSessions.filter((entry) => matchesEntry(entry, q)),
-      ...files.map((path) => createCommandPaletteFileEntry(path, category)),
-    ]
+    return {
+      query: q,
+      entries: [
+        ...nextSessions.filter((entry) => matchesCommandPaletteEntry(entry, q)),
+        ...files.map((path) => createCommandPaletteFileEntry(path, category)),
+      ],
+    }
   }
 
-  const [entries] = createResource(query, loadItems, { initialValue: [] as CommandPaletteEntry[] })
-  // Render stale results while a new query loads to avoid flashing "Loading" per keystroke.
-  const visibleEntries = createMemo(() => uniqueCommandPaletteEntries(entries.latest ?? []))
-  const groupedEntries = createMemo(() => groups(visibleEntries()))
+  const [remoteEntries] = createResource(query, loadRemoteItems, {
+    initialValue: { query: "", entries: [] } as RemoteCommandPaletteEntries,
+  })
+  const visibleEntries = createMemo(() => commandPaletteVisibleEntries(localEntries(), remoteEntries.latest, query()))
+  const groupedEntries = createMemo(() => groupCommandPaletteEntries(visibleEntries()))
   const activeEntry = createMemo(() => visibleEntries()[active()])
 
   createEffect(() => {
@@ -120,7 +123,7 @@ export function DialogCommandPaletteV2(props: { onOpenFile?: (path: string) => v
               when={visibleEntries().length > 0}
               fallback={
                 <div class="command-palette-v2-state">
-                  {entries.loading ? palette.language.t("common.loading") : palette.language.t("palette.empty")}
+                  {remoteEntries.loading ? palette.language.t("common.loading") : palette.language.t("palette.empty")}
                 </div>
               }
             >
