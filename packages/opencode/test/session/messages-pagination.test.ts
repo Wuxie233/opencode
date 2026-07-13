@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Effect, Option } from "effect"
+import { Effect, Option, Tracer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
@@ -234,9 +234,29 @@ describe("MessageV2.page", () => {
           text: "extra",
         })
 
-        const result = yield* MessageV2.page({ sessionID, limit: 10 })
+        const spans: Tracer.NativeSpan[] = []
+        const result = yield* MessageV2.page({ sessionID, limit: 10 }).pipe(
+          Effect.provideService(
+            Tracer.Tracer,
+            Tracer.make({
+              span(options) {
+                const span = new Tracer.NativeSpan(options)
+                spans.push(span)
+                return span
+              },
+            }),
+          ),
+        )
         expect(result.items).toHaveLength(1)
         expect(result.items[0].parts).toHaveLength(2)
+        const pageSpan = spans.findLast((span) => span.name === "MessageV2.page")
+        expect(pageSpan?.attributes.get("session.id")).toBe(sessionID)
+        expect(pageSpan?.attributes.get("message.page.limit")).toBe(10)
+        expect(pageSpan?.attributes.get("message.page.has_cursor")).toBe(false)
+        expect(pageSpan?.attributes.get("message.page.scanned")).toBe(1)
+        expect(pageSpan?.attributes.get("message.page.messages")).toBe(1)
+        expect(pageSpan?.attributes.get("message.page.parts")).toBe(2)
+        expect(pageSpan?.attributes.get("message.page.more")).toBe(false)
       }),
     ),
   )
