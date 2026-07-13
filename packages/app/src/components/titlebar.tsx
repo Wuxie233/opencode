@@ -264,13 +264,9 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
                 const conn = global.servers
                   .list()
                   .find((item) => ServerConnection.key(item) === (route.server ?? server.key))
-                return conn ? { route, sdk: global.ensureServerCtx(conn).sdk } : undefined
+                return conn ? { route, ctx: global.ensureServerCtx(conn) } : undefined
               },
-              ({ route, sdk }) =>
-                sdk.client.session
-                  .get({ sessionID: route.sessionId })
-                  .then((x) => x.data)
-                  .catch(() => {}),
+              ({ route, ctx }) => ctx.sync.session.resolve(route.sessionId).catch(() => undefined),
             )
 
             const matchRoute = (route: LayoutRoute) => {

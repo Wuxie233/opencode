@@ -304,15 +304,12 @@ function createServerNotificationState(input: {
     })
   }
 
-  const lookup = async (directory: string, sessionID?: string) => {
+  const lookup = async (sessionID?: string) => {
     if (!sessionID) return undefined
-    const sync = serverSync().ensureDirSyncContext(directory)
-    const session = sync.session.get(sessionID)
+    const sync = serverSync().session
+    const session = sync.peek(sessionID)
     if (session) return session
-    return sync.session
-      .sync(sessionID)
-      .then(() => sync.session.get(sessionID))
-      .catch(() => undefined)
+    return sync.resolve(sessionID).catch(() => undefined)
   }
 
   const viewedInCurrentSession = (directory: string, sessionID?: string) => {
@@ -327,7 +324,7 @@ function createServerNotificationState(input: {
 
   const handleSessionIdle = (directory: string, event: { properties: { sessionID?: string } }, time: number) => {
     const sessionID = event.properties.sessionID
-    void lookup(directory, sessionID).then((session) => {
+    void lookup(sessionID).then((session) => {
       if (meta.disposed) return
       if (!session) return
       if (session.parentID) return
@@ -357,7 +354,7 @@ function createServerNotificationState(input: {
     time: number,
   ) => {
     const sessionID = event.properties.sessionID
-    void lookup(directory, sessionID).then((session) => {
+    void lookup(sessionID).then((session) => {
       if (meta.disposed) return
       if (session?.parentID) return
 
