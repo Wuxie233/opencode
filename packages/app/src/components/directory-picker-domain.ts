@@ -118,6 +118,50 @@ export function currentPickerSuggestions<T>(result: { query: string; items: read
   return result.items
 }
 
+export async function loadPickerSuggestions(input: {
+  query: string
+  root: string
+  home: string
+  includeFiles: boolean
+  signal: AbortSignal
+  directories: (query: string, signal: AbortSignal) => Promise<string[]>
+  files: (
+    input: { directory: string; query: string; type: "file"; limit: number },
+    options: { signal: AbortSignal },
+  ) => Promise<{ data?: string[] }>
+}) {
+  const typed = cleanPickerInput(input.query).replace(/\/+$/, "")
+  const current = displayPickerPath(input.root, input.query, input.home).replace(/\/+$/, "")
+  if (!typed || typed === current) return { query: input.query, items: [] }
+  const directories = (await input.directories(input.query, input.signal)).map((absolute) => ({
+    absolute,
+    type: "directory" as const,
+  }))
+  if (input.signal.aborted) return { query: input.query, items: [] }
+  if (!input.includeFiles) return { query: input.query, items: directories.slice(0, 5) }
+  const files = await input
+    .files(
+      {
+        directory: input.root,
+        query: pickerFileSearchQuery(input.root, input.query, input.home),
+        type: "file",
+        limit: 20,
+      },
+      { signal: input.signal },
+    )
+    .then((result) => result.data ?? [])
+    .catch(() => [])
+  if (input.signal.aborted) return { query: input.query, items: [] }
+  const results = [
+    ...directories,
+    ...files.map((path) => ({ absolute: absoluteTreePath(input.root, path), type: "file" as const })),
+  ]
+  return {
+    query: input.query,
+    items: Array.from(new Map(results.map((result) => [result.absolute, result])).values()).slice(0, 8),
+  }
+}
+
 export function preloadTreeDirectories(
   parent: string,
   nodes: ReadonlyArray<{ name: string; type: "file" | "directory" }>,

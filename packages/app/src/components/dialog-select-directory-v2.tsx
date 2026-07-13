@@ -23,9 +23,11 @@ import {
   createDirectorySearch,
   currentPickerSuggestions,
   displayPickerPath,
+  loadPickerSuggestions,
   pickerParent,
   pickerRoot,
 } from "./directory-picker-domain"
+import { createLatestSearch } from "./latest-search"
 import "./dialog-select-directory-v2.css"
 import { DividerV2 } from "@opencode-ai/ui/v2/divider-v2"
 
@@ -63,6 +65,7 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
   let container: HTMLDivElement | undefined
   let pathArea: HTMLDivElement | undefined
   let navigation = 0
+  let navigationAbort: AbortController | undefined
 
   const missingBase = createMemo(() => !(sync.data.path.home || sync.data.path.directory))
   const [fallbackPath] = createResource(
@@ -84,28 +87,21 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
       fallbackPath()?.directory,
   )
   const search = createDirectorySearch({ sdk, home, base: () => root() || start() })
-  const [suggestions] = createResource(input, async (value) => {
-    const typed = cleanPickerInput(value).replace(/\/+$/, "")
-    const current = displayPickerPath(root(), value, home()).replace(/\/+$/, "")
-    if (!typed || typed === current) return { query: value, items: [] }
-    const directories = (await search(value)).map((absolute) => ({ absolute, type: "directory" as const }))
-    if (!policy.includeFiles) return { query: value, items: directories.slice(0, 5) }
-    const files = await sdk.client.find
-      .files({ directory: root(), query: pickerFileSearchQuery(root(), value, home()), type: "file", limit: 20 })
-      .then((result) => result.data ?? [])
-      .catch(() => [])
-    const results = [
-      ...directories,
-      ...files.map((path) => ({ absolute: absoluteTreePath(root(), path), type: "file" as const })),
-    ]
-    return {
+  const suggestionSearch = createLatestSearch((value, signal) =>
+    loadPickerSuggestions({
       query: value,
-      items: Array.from(new Map(results.map((result) => [result.absolute, result])).values()).slice(0, 8),
-    }
-  })
+      root: root(),
+      home: home(),
+      includeFiles: policy.includeFiles,
+      signal,
+      directories: search,
+      files: (input, options) => sdk.client.find.files(input, options),
+    }),
+  )
+  const [suggestions] = createResource(input, suggestionSearch.run)
   const currentSuggestions = createMemo(() => currentPickerSuggestions(suggestions(), input()))
 
-  async function load(path: string, generation: number, eager = false) {
+  async function load(path: string, generation: number, signal: AbortSignal, eager = false) {
     const key = path.replace(/\/+$/, "")
     setError(false)
     const absolute = absoluteTreePath(root(), key)
@@ -114,15 +110,15 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
     const request =
       existing ??
       loads.schedule(`${generation}:${key}`, eager ? "background" : "user", () => {
-        if (!activeTreeNavigation(generation, navigation)) return Promise.resolve(undefined)
+        if (!activeTreeNavigation(generation, navigation) || signal.aborted) return Promise.resolve(undefined)
         return sdk.client.file
-          .list({ directory: absolute, path: "" })
+          .list({ directory: absolute, path: "" }, { signal })
           .then((result) => result.data ?? [])
           .catch(() => undefined)
       })
     listings.set(key, request)
     const nodes = await request
-    if (!activeTreeNavigation(generation, navigation)) return false
+    if (!activeTreeNavigation(generation, navigation) || signal.aborted) return false
     if (!nodes) {
       listings.delete(key)
       if (!key) setError(true)
@@ -130,7 +126,7 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
     }
     tree?.batch(policy.entries(key, nodes).map((item) => ({ type: "add", path: item })))
     if (!eager && advanceTreePreload(advanced, key)) {
-      for (const directory of preloadTreeDirectories(key, nodes)) void load(directory, generation, true)
+      for (const directory of preloadTreeDirectories(key, nodes)) void load(directory, generation, signal, true)
     }
     return true
   }
@@ -138,6 +134,9 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
   async function navigate(path: string) {
     const value = policy.navigation(pickerAbsoluteInput(cleanPickerInput(path), home(), root() || start() || home()))
     if (!value) return
+    navigationAbort?.abort()
+    const abort = new AbortController()
+    navigationAbort = abort
     const token = ++navigation
     setLoading(true)
     setRootValid(false)
@@ -149,8 +148,8 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
     listings.clear()
     advanced.clear()
     tree?.resetPaths([])
-    const valid = await load("", token)
-    if (!activeTreeNavigation(token, navigation)) return
+    const valid = await load("", token, abort.signal)
+    if (!activeTreeNavigation(token, navigation) || abort.signal.aborted) return
     setRootValid(valid)
     setLoading(false)
   }
@@ -246,7 +245,8 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
         }
       `,
       onExpansionChange(change) {
-        if (change.expanded) void load(change.path, navigation)
+        const signal = navigationAbort?.signal
+        if (change.expanded && signal) void load(change.path, navigation, signal)
       },
       onSelectionChange(paths) {
         const path = paths.at(-1)
@@ -264,7 +264,14 @@ export function DialogSelectDirectoryV2(props: DialogSelectDirectoryV2Props) {
     void navigate(path)
   })
 
-  onCleanup(() => tree?.cleanUp())
+  onCleanup(() => {
+    suggestionSearch.stop()
+    navigation++
+    navigationAbort?.abort()
+    navigationAbort = undefined
+    tree?.cleanUp()
+    tree = undefined
+  })
 
   return (
     <Dialog size="large" class="directory-picker-v2">

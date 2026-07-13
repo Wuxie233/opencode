@@ -17,6 +17,7 @@ import {
   createDirectorySearch,
   createPriorityTaskQueue,
   displayPickerPath,
+  loadPickerSuggestions,
   pickerParent,
   pickerRoot,
   pickerAbsoluteInput,
@@ -123,6 +124,58 @@ test("exposes autocomplete results only for their source query", () => {
   const result = { query: "/repo/src", items: ["/repo/src/index.ts"] }
   expect(currentPickerSuggestions(result, "/repo/src")).toEqual(result.items)
   expect(currentPickerSuggestions(result, "/repo/test")).toEqual([])
+})
+
+test("does not start file suggestions after directory search cancellation", async () => {
+  const directories = Promise.withResolvers<string[]>()
+  let files = 0
+  const abort = new AbortController()
+  const pending = loadPickerSuggestions({
+    query: "src",
+    root: "/repo",
+    home: "/home/luke",
+    includeFiles: true,
+    signal: abort.signal,
+    directories: () => directories.promise,
+    files: () => {
+      files++
+      return Promise.resolve({ data: ["src/index.ts"] })
+    },
+  })
+
+  abort.abort()
+  directories.resolve(["/repo/src"])
+
+  expect(await pending).toEqual({ query: "src", items: [] })
+  expect(files).toBe(0)
+})
+
+test("uses one signal and root snapshot for directory and file suggestions", async () => {
+  const abort = new AbortController()
+  const options: Array<{ signal: AbortSignal }> = []
+  const result = await loadPickerSuggestions({
+    query: "/repo/src",
+    root: "/repo",
+    home: "/home/luke",
+    includeFiles: true,
+    signal: abort.signal,
+    directories: async (_query, signal) => {
+      expect(signal).toBe(abort.signal)
+      return ["/repo/src"]
+    },
+    files: (input, next) => {
+      expect(input.directory).toBe("/repo")
+      expect(input.query).toBe("src")
+      options.push(next)
+      return Promise.resolve({ data: ["src/index.ts"] })
+    },
+  })
+
+  expect(result.items).toEqual([
+    { absolute: "/repo/src", type: "directory" },
+    { absolute: "/repo/src/index.ts", type: "file" },
+  ])
+  expect(options).toEqual([{ signal: abort.signal }])
 })
 
 test("scopes file autocomplete to the current browser root", () => {
