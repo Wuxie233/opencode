@@ -21,8 +21,10 @@ test("shows sessions from a completed directory while another directory is still
     releaseSlow = resolve
   })
   const requests = { slow: 0, completed: 0 }
+  const limits = new Map<string, string[]>()
 
-  await setup(page, async (route, directory) => {
+  await setup(page, async (route, directory, url) => {
+    limits.set(directory, [...(limits.get(directory) ?? []), url.searchParams.get("limit") ?? "unbounded"])
     if (directory === fastDirectory) return json(route, [sessions[0]])
     if (directory !== slowDirectory) return json(route, [])
 
@@ -43,9 +45,16 @@ test("shows sessions from a completed directory while another directory is still
   }
 
   await expect(page.locator('[data-component="home-session-row"]', { hasText: slowTitle })).toBeVisible()
+  expectHomeRequest(limits.get(fastDirectory))
+  expectHomeRequest(limits.get(slowDirectory))
 })
 
-async function setup(page: Page, listSessions: (route: Route, directory: string) => Promise<void>) {
+function expectHomeRequest(limits: string[] | undefined) {
+  expect(limits).toHaveLength(1)
+  expect(Number(limits?.[0])).toBeGreaterThanOrEqual(64)
+}
+
+async function setup(page: Page, listSessions: (route: Route, directory: string, url: URL) => Promise<void>) {
   await mockOpenCodeServer(page, {
     directory: fastDirectory,
     project: projects[0],
@@ -71,7 +80,7 @@ async function setup(page: Page, listSessions: (route: Route, directory: string)
         home: "C:/OpenCode",
       })
     }
-    if (url.pathname === "/session") return listSessions(route, directory)
+    if (url.pathname === "/session") return listSessions(route, directory, url)
     return route.fallback()
   })
 

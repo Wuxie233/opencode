@@ -166,9 +166,12 @@ function SelectedServerProviders(props: ParentProps) {
 }
 
 function LegacyServerLayout(props: ParentProps<{ serverScoped?: JSX.Element }>) {
+  const settings = useSettings()
   return (
     <SelectedServerProviders>
-      <LegacyServerScopedShell serverScoped={props.serverScoped}>{props.children}</LegacyServerScopedShell>
+      <LegacyServerScopedShell serverScoped={props.serverScoped} preloadSessions={!settings.general.newLayoutDesigns()}>
+        {props.children}
+      </LegacyServerScopedShell>
     </SelectedServerProviders>
   )
 }
@@ -311,12 +314,13 @@ type ServerScopedShellProps = ParentProps<{
   directory?: () => string | undefined
   sessionID?: () => string | undefined
   serverScoped?: JSX.Element
+  preloadSessions?: boolean
 }>
 
 function ServerScopedProviders(props: ServerScopedShellProps) {
   return (
     <PermissionProvider directory={props.directory}>
-      <LayoutProvider>
+      <LayoutProvider preloadSessions={props.preloadSessions}>
         {props.serverScoped}
         <ModelsProvider directory={props.directory}>{props.children}</ModelsProvider>
       </LayoutProvider>
@@ -326,7 +330,12 @@ function ServerScopedProviders(props: ServerScopedShellProps) {
 
 function LegacyServerScopedShell(props: ServerScopedShellProps) {
   return (
-    <ServerScopedProviders directory={props.directory} sessionID={props.sessionID} serverScoped={props.serverScoped}>
+    <ServerScopedProviders
+      directory={props.directory}
+      sessionID={props.sessionID}
+      serverScoped={props.serverScoped}
+      preloadSessions={props.preloadSessions}
+    >
       <LegacyLayout>{props.children}</LegacyLayout>
     </ServerScopedProviders>
   )
@@ -335,7 +344,7 @@ function LegacyServerScopedShell(props: ServerScopedShellProps) {
 function NewAppLayout(props: ParentProps<{ serverScoped?: JSX.Element }>) {
   return (
     <SelectedServerProviders>
-      <ServerScopedProviders serverScoped={props.serverScoped}>
+      <ServerScopedProviders serverScoped={props.serverScoped} preloadSessions={false}>
         <NewLayout>{props.children}</NewLayout>
       </ServerScopedProviders>
     </SelectedServerProviders>

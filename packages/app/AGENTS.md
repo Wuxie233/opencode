@@ -19,6 +19,12 @@
 
 - Always prefer `createStore` over multiple `createSignal` calls
 
+## Session Loading
+
+- Home owns visible Session loading in the new layout; the new layout does not run the legacy all-project background preload.
+- Keep the legacy layout background preload bounded so it cannot fan out one request per project at startup.
+- Cancel queued directory dispatch when ownership changes, but let already-started shared `project.loadSessions` requests finish and populate the shared cache.
+
 ## Tool Calling
 
 - ALWAYS USE PARALLEL TOOLS WHEN APPLICABLE.

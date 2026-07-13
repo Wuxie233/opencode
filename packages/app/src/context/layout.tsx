@@ -20,6 +20,7 @@ import { createSessionKeyReader, ensureSessionKey, pruneSessionKeys } from "./la
 import { requireServerKey } from "@/utils/session-route"
 import { type DraftTab, useTabs } from "./tabs"
 import { closeSessionTab, openSessionTab, previewSessionTab, type SessionTabs } from "./layout-tabs"
+import { preloadLayoutSessions } from "./layout-session-preload"
 
 export { createSessionKeyReader, ensureSessionKey, pruneSessionKeys }
 
@@ -150,7 +151,7 @@ const currentRoute = (pathname: string, search: string): LayoutRoute => {
 export const { use: useLayout, provider: LayoutProvider } = createSimpleContext({
   name: "Layout",
   gate: false,
-  init: () => {
+  init: (props: { preloadSessions?: boolean }) => {
     const serverSdk = useServerSDK()
     const serverSync = useServerSync()
     const server = useServer()
@@ -569,26 +570,28 @@ export const { use: useLayout, provider: LayoutProvider } = createSimpleContext(
       }
     })
 
-    let sessionFrame: number | undefined
-    let sessionTimer: number | undefined
-
-    onMount(() => {
-      sessionFrame = requestAnimationFrame(() => {
-        sessionFrame = undefined
-        sessionTimer = window.setTimeout(() => {
-          sessionTimer = undefined
-          void Promise.all(
-            server.projects.list().map((project) => {
-              return serverSync().project.loadSessions(project.worktree)
-            }),
+    createEffect(() => {
+      if (!props.preloadSessions) return
+      const directories = server.projects.list().map((project) => project.worktree)
+      if (directories.length === 0) return
+      const abort = new AbortController()
+      let timer: number | undefined
+      const frame = requestAnimationFrame(() => {
+        timer = window.setTimeout(() => {
+          timer = undefined
+          void preloadLayoutSessions(
+            directories,
+            (directory) => serverSync().project.loadSessions(directory),
+            abort.signal,
           )
         }, 0)
       })
-    })
 
-    onCleanup(() => {
-      if (sessionFrame !== undefined) cancelAnimationFrame(sessionFrame)
-      if (sessionTimer !== undefined) window.clearTimeout(sessionTimer)
+      onCleanup(() => {
+        abort.abort()
+        cancelAnimationFrame(frame)
+        if (timer !== undefined) window.clearTimeout(timer)
+      })
     })
 
     return {
