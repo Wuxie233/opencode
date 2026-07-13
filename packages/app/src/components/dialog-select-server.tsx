@@ -9,7 +9,7 @@ import { TextField } from "@opencode-ai/ui/text-field"
 import { useMutation } from "@tanstack/solid-query"
 import { showToast } from "@/utils/toast"
 import { useNavigate } from "@solidjs/router"
-import { createEffect, createMemo, createResource, Show } from "solid-js"
+import { createEffect, createMemo, createResource, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { ServerHealthIndicator, ServerRow } from "@/components/server/server-row"
 import { useGlobal } from "@/context/global"
@@ -19,6 +19,7 @@ import { normalizeServerUrl, ServerConnection, useServer } from "@/context/serve
 import { type ServerHealth, useCheckServerHealth } from "@/utils/server-health"
 import { useSettings } from "@/context/settings"
 import { useTabs } from "@/context/tabs"
+import { createServerPreview } from "./dialog-select-server-preview"
 
 const DEFAULT_USERNAME = "opencode"
 
@@ -79,6 +80,8 @@ function useDefaultServer() {
 
 function useServerPreview() {
   const checkServerHealth = useCheckServerHealth()
+  const preview = createServerPreview((http, signal) => checkServerHealth(http, { signal }))
+  onCleanup(preview.stop)
 
   const looksComplete = (value: string) => {
     const normalized = normalizeServerUrl(value)
@@ -96,17 +99,22 @@ function useServerPreview() {
     setStatus: (value: boolean | undefined) => void,
   ) => {
     setStatus(undefined)
-    if (!looksComplete(value)) return
+    if (!looksComplete(value)) {
+      preview.stop()
+      return
+    }
     const normalized = normalizeServerUrl(value)
-    if (!normalized) return
+    if (!normalized) {
+      preview.stop()
+      return
+    }
     const http: ServerConnection.HttpBase = { url: normalized }
     if (username) http.username = username
     if (password) http.password = password
-    const result = await checkServerHealth(http)
-    setStatus(result.healthy)
+    preview.run(http, setStatus)
   }
 
-  return { previewStatus }
+  return { previewStatus, stopPreview: preview.stop }
 }
 
 function ServerForm(props: ServerFormProps) {
@@ -197,7 +205,7 @@ export function useServerManagementController(options: { onSelect?: () => void; 
   const platform = usePlatform()
   const language = useLanguage()
   const { defaultKey, canDefault, setDefault } = useDefaultServer()
-  const { previewStatus } = useServerPreview()
+  const { previewStatus, stopPreview } = useServerPreview()
   const checkServerHealth = useCheckServerHealth()
   const [store, setStore] = createStore({
     addServer: {
@@ -221,6 +229,7 @@ export function useServerManagementController(options: { onSelect?: () => void; 
   })
 
   const resetAdd = () => {
+    stopPreview()
     setStore("addServer", {
       url: "",
       name: "",
@@ -232,6 +241,7 @@ export function useServerManagementController(options: { onSelect?: () => void; 
     })
   }
   const resetEdit = () => {
+    stopPreview()
     setStore("editServer", {
       id: undefined,
       value: "",
@@ -476,6 +486,7 @@ export function useServerManagementController(options: { onSelect?: () => void; 
   }
 
   const submitForm = () => {
+    stopPreview()
     if (mode() === "add") {
       if (addMutation.isPending) return
       setStore("addServer", { error: "" })
