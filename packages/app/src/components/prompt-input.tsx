@@ -72,6 +72,7 @@ import { PromptImageAttachments } from "./prompt-input/image-attachments"
 import { PromptDragOverlay } from "./prompt-input/drag-overlay"
 import { promptPlaceholder } from "./prompt-input/placeholder"
 import { createPromptInputTransientState } from "./prompt-input/transient-state"
+import { createScrollScheduler } from "./prompt-input/scroll-scheduler"
 import { showToast } from "@/utils/toast"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
@@ -261,12 +262,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
   }
 
-  const queueScroll = (count = 2) => {
-    requestAnimationFrame(() => {
-      scrollCursorIntoView()
-      if (count > 1) queueScroll(count - 1)
-    })
-  }
+  const scrollScheduler = createScrollScheduler({ measure: scrollCursorIntoView })
+  const queueScroll = scrollScheduler.queue
+  onCleanup(scrollScheduler.stop)
 
   const activeFileTab = createSessionTabs({
     tabs,
