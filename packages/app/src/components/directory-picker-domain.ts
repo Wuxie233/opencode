@@ -361,9 +361,9 @@ export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string
     return fuzzysort.go(query, items, { key: "name", limit }).map((item) => item.obj.absolute)
   }
 
-  return async (filter: string) => {
+  return async (filter: string, signal?: AbortSignal) => {
     const token = ++current
-    const active = () => token === current
+    const active = () => token === current && !signal?.aborted
     const value = cleanPickerInput(filter)
     const input = scoped(value)
     if (!input) return [] as string[]
@@ -372,7 +372,7 @@ export function createDirectorySearch(args: { sdk: ServerSDK; base: () => string
     const query = normalizePickerDrive(input.path)
     if (!pathInput) {
       const results = await args.sdk.client.find
-        .files({ directory: input.directory, query, type: "directory", limit: 50 })
+        .files({ directory: input.directory, query, type: "directory", limit: 50 }, { signal })
         .then((result) => result.data ?? [])
         .catch(() => [])
       if (!active()) return []

@@ -4,11 +4,12 @@ import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { List } from "@opencode-ai/ui/list"
 import type { ListRef } from "@opencode-ai/ui/list"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
-import { createMemo, createResource, createSignal } from "solid-js"
+import { createMemo, createResource, createSignal, onCleanup } from "solid-js"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { useGlobal } from "@/context/global"
 import { cleanPickerInput, createDirectorySearch, displayPickerPath } from "./directory-picker-domain"
+import { createLatestSearch } from "./latest-search"
 
 interface DialogSelectDirectoryProps {
   title?: string
@@ -73,11 +74,9 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
     () => sync.data.path.home || sync.data.path.directory || fallbackPath()?.home || fallbackPath()?.directory,
   )
 
-  const directories = createDirectorySearch({
-    sdk,
-    home,
-    base: start,
-  })
+  const searchDirectories = createDirectorySearch({ sdk, home, base: start })
+  const directories = createLatestSearch(searchDirectories)
+  onCleanup(directories.stop)
 
   const recentProjects = createMemo(() => {
     const projects = serverCtx.projects.list()
@@ -112,7 +111,7 @@ export function DialogSelectDirectory(props: DialogSelectDirectoryProps) {
   })
 
   const items = async (value: string) => {
-    const results = await directories(value)
+    const results = await directories.run(value)
     const directoryRows = results.map((absolute) => toRow(absolute, home(), "folders"))
     return uniqueRows([...recentProjects(), ...directoryRows])
   }

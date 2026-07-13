@@ -152,6 +152,63 @@ test("resolves directory autocomplete from the current browser root", async () =
   expect(directories).toEqual(["/repo", "/repo/src"])
 })
 
+test("cancels only query-private directory searches", async () => {
+  const pending = [Promise.withResolvers<{ data: string[] }>(), Promise.withResolvers<{ data: string[] }>()]
+  const signals: Array<AbortSignal | undefined> = []
+  const sdk = {
+    client: {
+      find: {
+        files: (_input: unknown, options?: { signal?: AbortSignal }) => {
+          signals.push(options?.signal)
+          return pending[signals.length - 1]!.promise
+        },
+      },
+    },
+  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+  const search = createDirectorySearch({ sdk, home: () => "/home/luke", base: () => "/repo" })
+  const first = new AbortController()
+  const second = new AbortController()
+
+  const stale = search("first", first.signal)
+  first.abort()
+  const current = search("second", second.signal)
+  pending[0]!.resolve({ data: ["old"] })
+  pending[1]!.resolve({ data: ["new"] })
+
+  expect(await stale).toEqual([])
+  expect(await current).toEqual(["/repo/new"])
+  expect(signals).toEqual([first.signal, second.signal])
+})
+
+test("reuses path listings after an input search is cancelled", async () => {
+  const root = Promise.withResolvers<{
+    data: Array<{ name: string; absolute: string; type: "directory" }>
+  }>()
+  const calls: Array<{ directory: string; options: unknown }> = []
+  const sdk = {
+    client: {
+      file: {
+        list: (input: { directory: string }, options?: unknown) => {
+          calls.push({ directory: input.directory, options })
+          return root.promise
+        },
+      },
+    },
+  } as unknown as Parameters<typeof createDirectorySearch>[0]["sdk"]
+  const search = createDirectorySearch({ sdk, home: () => "/home/luke", base: () => "/repo" })
+  const first = new AbortController()
+  const second = new AbortController()
+
+  const stale = search("./", first.signal)
+  first.abort()
+  const current = search("./", second.signal)
+  root.resolve({ data: [{ name: "src", absolute: "/repo/src", type: "directory" }] })
+
+  expect(await stale).toEqual([])
+  expect(await current).toEqual(["/repo/src"])
+  expect(calls).toEqual([{ directory: "/repo", options: undefined }])
+})
+
 test("identifies the next directory level to preload", () => {
   expect(
     preloadTreeDirectories("src/", [
