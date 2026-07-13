@@ -22,6 +22,7 @@ import { QueryClient, queryOptions } from "@tanstack/solid-query"
 import { loadMcpQuery, loadMcpResourcesQuery } from "../server-sync"
 import { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
 import { ScopedKey, type ServerScope } from "@/utils/server-scope"
+import { runBounded } from "@/utils/run-bounded"
 
 type GlobalStore = {
   ready: boolean
@@ -57,6 +58,7 @@ function errors(list: PromiseSettledResult<unknown>[]) {
 }
 
 const providerRev = new Map<string, number>()
+const SESSION_WARM_CONCURRENCY = 4
 
 export function clearProviderRev(scope: ServerScope, directory: string) {
   providerRev.delete(ScopedKey.from(scope, directory))
@@ -64,6 +66,22 @@ export function clearProviderRev(scope: ServerScope, directory: string) {
 
 function runAll(list: Array<() => Promise<unknown>>) {
   return Promise.allSettled(list.map((item) => item()))
+}
+
+export async function warmSessionInfo(ids: string[], resolve: (sessionID: string) => Promise<unknown>) {
+  const failures: unknown[] = []
+  await runBounded(
+    [...new Set(ids)].filter(Boolean),
+    async (sessionID) => {
+      try {
+        await resolve(sessionID)
+      } catch (error) {
+        failures.push(error)
+      }
+    },
+    { concurrency: SESSION_WARM_CONCURRENCY },
+  )
+  if (failures.length > 0) throw failures[0]
 }
 
 function showErrors(input: {
@@ -167,15 +185,13 @@ function warmSessions(input: {
   const known = new Set(input.store.session.map((item) => item.id))
   const ids = [...new Set(input.ids)].filter((id) => !!id && !known.has(id))
   if (ids.length === 0) return Promise.resolve()
-  return Promise.all(
-    ids.map((sessionID) =>
-      retry(() => input.sdk.session.get({ sessionID })).then((x) => {
+  return warmSessionInfo(ids, (sessionID) =>
+    retry(() => input.sdk.session.get({ sessionID })).then((x) => {
         const session = x.data
         if (!session?.id) return
         mergeSession(input.setStore, session)
       }),
-    ),
-  ).then(() => undefined)
+  )
 }
 
 export const loadProvidersQuery = (scope: ServerScope, directory: string | null, sdk: OpencodeClient) =>
@@ -267,8 +283,8 @@ export async function bootstrapDirectory(input: {
             // Warm session info only after seeding statuses so a stalled session
             // fetch cannot park busy indicators behind it, mirroring how live
             // session.status events apply first and resolve info in the background.
-            await Promise.all(
-              Object.keys(statuses).map((sessionID) => input.session!.resolve(sessionID).catch(() => undefined)),
+            await warmSessionInfo(Object.keys(statuses), (sessionID) => input.session!.resolve(sessionID)).catch(
+              () => undefined,
             )
           }),
         ),
@@ -298,7 +314,7 @@ export async function bootstrapDirectory(input: {
               (x.data ?? []).filter((perm): perm is PermissionRequest => !!perm?.id && !!perm.sessionID),
             )
             const warm = input.session
-              ? Promise.all(ids.map((sessionID) => input.session!.resolve(sessionID))).then(() => undefined)
+              ? warmSessionInfo(ids, (sessionID) => input.session!.resolve(sessionID))
               : warmSessions({ ids, store: input.store, setStore: input.setStore, sdk: input.sdk })
             return warm.then(() =>
               batch(() => {
@@ -327,7 +343,7 @@ export async function bootstrapDirectory(input: {
             const ids = (x.data ?? []).map((question) => question?.sessionID).filter((id): id is string => !!id)
             const grouped = groupBySession((x.data ?? []).filter((q): q is QuestionRequest => !!q?.id && !!q.sessionID))
             const warm = input.session
-              ? Promise.all(ids.map((sessionID) => input.session!.resolve(sessionID))).then(() => undefined)
+              ? warmSessionInfo(ids, (sessionID) => input.session!.resolve(sessionID))
               : warmSessions({ ids, store: input.store, setStore: input.setStore, sdk: input.sdk })
             return warm.then(() =>
               batch(() => {

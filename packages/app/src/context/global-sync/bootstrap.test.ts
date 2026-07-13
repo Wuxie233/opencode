@@ -3,7 +3,7 @@ import { createStore } from "solid-js/store"
 import { QueryClient } from "@tanstack/solid-query"
 import type { Config, OpencodeClient, Project, Session } from "@opencode-ai/sdk/v2/client"
 import type { NormalizedProviderListResponse } from "@opencode-ai/session-ui/context"
-import { bootstrapDirectory, loadPathQuery, loadProvidersQuery } from "./bootstrap"
+import { bootstrapDirectory, loadPathQuery, loadProvidersQuery, warmSessionInfo } from "./bootstrap"
 import type { State, VcsCache } from "./types"
 import { createServerSession } from "../server-session"
 import { ServerScope } from "@/utils/server-scope"
@@ -157,6 +157,39 @@ describe("bootstrapDirectory", () => {
 
     expect(session.data.session_status["ses_busy"]?.type).toBe("busy")
     expect(session.data.session_status[stale.id]).toBeUndefined()
+  })
+})
+
+describe("warmSessionInfo", () => {
+  test("deduplicates ids and bounds metadata requests", async () => {
+    const ids = [...Array.from({ length: 12 }, (_, index) => `ses_${index}`), "ses_0", "ses_1"]
+    const resolved: string[] = []
+    let active = 0
+    let peak = 0
+
+    await warmSessionInfo(ids, async (sessionID) => {
+      active += 1
+      peak = Math.max(peak, active)
+      await Bun.sleep(1)
+      resolved.push(sessionID)
+      active -= 1
+    })
+
+    expect(peak).toBe(4)
+    expect(resolved.toSorted()).toEqual(Array.from({ length: 12 }, (_, index) => `ses_${index}`).toSorted())
+  })
+
+  test("attempts every id before propagating the first failure", async () => {
+    const attempted: string[] = []
+
+    await expect(
+      warmSessionInfo(["ses_1", "ses_2", "ses_3"], async (sessionID) => {
+        attempted.push(sessionID)
+        if (sessionID === "ses_1") throw new Error("failed")
+      }),
+    ).rejects.toThrow("failed")
+
+    expect(attempted.toSorted()).toEqual(["ses_1", "ses_2", "ses_3"])
   })
 })
 
