@@ -34,7 +34,7 @@ export interface SessionReviewTabProps {
   focusedFile?: string
   onScrollRef?: (el: HTMLDivElement | undefined) => void
   commentMentions?: {
-    items: (query: string) => string[] | Promise<string[]>
+    items: (query: string, options?: { signal?: AbortSignal }) => string[] | Promise<string[]>
   }
   classes?: {
     root?: string

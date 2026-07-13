@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createLatestSearch } from "./latest-search"
+import { createLatestSearch } from "./create-latest-search"
 
 describe("createLatestSearch", () => {
   test("aborts the previous search before starting the next", async () => {

@@ -62,6 +62,38 @@ test("shows a comment button when a line number is hovered", async ({ page }) =>
   await expect(review.getByRole("textbox")).toBeVisible()
 })
 
+test("cancels stale mention searches when the query changes or closes", async ({ page }) => {
+  await page.evaluate(() => {
+    const original = window.fetch
+    const signals: AbortSignal[] = []
+    Object.assign(window, {
+      __mentionSearchSignals: signals,
+      fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" || input instanceof URL ? String(input) : input.url
+        if (!new URL(url, window.location.href).pathname.endsWith("/find/file")) return original(input, init)
+
+        const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
+        if (signal) signals.push(signal)
+        return new Promise<Response>((_, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+        })
+      },
+    })
+  })
+
+  const review = page.locator('[data-component="session-review"]')
+  await review.getByText("export const value = 'after'", { exact: true }).click()
+  const editor = review.getByRole("textbox")
+  await editor.fill("@one")
+  await expect.poll(() => mentionSearchState(page)).toEqual([false])
+
+  await editor.fill("@two")
+  await expect.poll(() => mentionSearchState(page)).toEqual([true, false])
+
+  await editor.press("Escape")
+  await expect.poll(() => mentionSearchState(page)).toEqual([true, true])
+})
+
 test("stages a submitted line comment in the prompt context", async ({ page }) => {
   const requests: string[] = []
   page.on("request", (request) => {
@@ -154,4 +186,12 @@ async function openReview(page: Page) {
     .getByRole("button")
     .first()
     .click()
+}
+
+function mentionSearchState(page: Page) {
+  return page.evaluate(() =>
+    ((window as Window & { __mentionSearchSignals?: AbortSignal[] }).__mentionSearchSignals ?? []).map(
+      (signal) => signal.aborted,
+    ),
+  )
 }

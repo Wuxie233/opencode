@@ -1,6 +1,6 @@
-import { useFilteredList } from "@opencode-ai/ui/hooks"
+import { createLatestSearch, useFilteredList } from "@opencode-ai/ui/hooks"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
-import { createSignal, For, onMount, Show, splitProps, type JSX } from "solid-js"
+import { createSignal, For, onCleanup, onMount, Show, splitProps, type JSX } from "solid-js"
 import { Button } from "@opencode-ai/ui/button"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { Icon } from "@opencode-ai/ui/icon"
@@ -187,7 +187,7 @@ export type LineCommentEditorProps = Omit<LineCommentAnchorProps, "children" | "
   cancelLabel?: string
   submitLabel?: string
   mention?: {
-    items: (query: string) => string[] | Promise<string[]>
+    items: (query: string, options?: { signal?: AbortSignal }) => string[] | Promise<string[]>
   }
 }
 
@@ -211,6 +211,14 @@ export const LineCommentEditor = (props: LineCommentEditorProps) => {
     textarea: undefined as HTMLTextAreaElement | undefined,
   }
   const [open, setOpen] = createSignal(false)
+  const mentionSearch = createLatestSearch(async (query, signal) => {
+    const items = split.mention?.items(query, { signal }) ?? []
+    return Promise.resolve(items).catch((error) => {
+      if (signal.aborted) return []
+      throw error
+    })
+  })
+  onCleanup(mentionSearch.stop)
 
   function selectMention(item: { path: string } | undefined) {
     if (!item) return
@@ -234,8 +242,11 @@ export const LineCommentEditor = (props: LineCommentEditorProps) => {
   const mention = useFilteredList<{ path: string }>({
     items: async (query) => {
       if (!split.mention) return []
-      if (!query.trim()) return []
-      const paths = await split.mention.items(query)
+      if (!query.trim()) {
+        mentionSearch.stop()
+        return []
+      }
+      const paths = await mentionSearch.run(query)
       return paths.map((path) => ({ path }))
     },
     key: (item) => item.path,
@@ -257,6 +268,7 @@ export const LineCommentEditor = (props: LineCommentEditorProps) => {
     }
 
   const closeMention = () => {
+    mentionSearch.stop()
     setOpen(false)
     mention.clear()
   }

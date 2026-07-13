@@ -1,4 +1,5 @@
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { createLatestSearch } from "@opencode-ai/ui/hooks"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { FileIcon } from "@opencode-ai/ui/file-icon"
 import { List } from "@opencode-ai/ui/list"
@@ -9,7 +10,6 @@ import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { useGlobal } from "@/context/global"
 import { cleanPickerInput, createDirectorySearch, displayPickerPath } from "./directory-picker-domain"
-import { createLatestSearch } from "./latest-search"
 
 interface DialogSelectDirectoryProps {
   title?: string

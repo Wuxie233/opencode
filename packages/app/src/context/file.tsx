@@ -289,7 +289,8 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       setSelectedLines,
       searchFiles: (query: string, options?: { limit?: number; signal?: AbortSignal }) =>
         search(query, "false", options),
-      searchFilesAndDirectories: (query: string) => search(query, "true"),
+      searchFilesAndDirectories: (query: string, options?: { limit?: number; signal?: AbortSignal }) =>
+        search(query, "true", options),
     }
   },
 })

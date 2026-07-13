@@ -1,6 +1,7 @@
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { createLatestSearch } from "@opencode-ai/ui/hooks"
 import { useNavigate } from "@solidjs/router"
 import { createMemo, onCleanup } from "solid-js"
 import { useCommand, type CommandOption } from "@/context/command"
@@ -13,7 +14,6 @@ import { createSessionTabs } from "@/pages/session/helpers"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { decode64 } from "@/utils/base64"
 import { createSessionEntries } from "./command-palette-session-load"
-import { createLatestSearch } from "./latest-search"
 
 export type CommandPaletteEntry = {
   id: string
