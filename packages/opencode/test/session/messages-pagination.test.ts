@@ -473,6 +473,37 @@ describe("MessageV2.parts", () => {
   )
 })
 
+describe("MessageV2.turn", () => {
+  it.instance("stops after the page containing the target user and keeps all assistant retries", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        yield* fill(sessionID, 120, (i: number) => 1000 + i)
+        const user = yield* addUser(sessionID, "target")
+        const first = yield* addAssistant(sessionID, user)
+        const second = yield* addAssistant(sessionID, user)
+        yield* fill(sessionID, 10)
+        const spans: Tracer.NativeSpan[] = []
+
+        const result = yield* MessageV2.turn({ sessionID, messageID: user }).pipe(
+          Effect.provideService(
+            Tracer.Tracer,
+            Tracer.make({
+              span(options) {
+                const span = new Tracer.NativeSpan(options)
+                spans.push(span)
+                return span
+              },
+            }),
+          ),
+        )
+
+        expect(result.map((item) => item.info.id)).toEqual([user, first, second])
+        expect(spans.filter((span) => span.name === "MessageV2.page")).toHaveLength(1)
+      }),
+    ),
+  )
+})
+
 describe("MessageV2.get", () => {
   it.instance("returns message with hydrated parts", () =>
     withSession(({ sessionID }) =>

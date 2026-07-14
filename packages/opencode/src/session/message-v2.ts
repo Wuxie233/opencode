@@ -483,6 +483,27 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
   }
 })
 
+export const turn = Effect.fn("MessageV2.turn")(function* (input: {
+  sessionID: SessionID
+  messageID: MessageID
+}) {
+  const result = [] as WithParts[]
+  let before: string | undefined
+  while (true) {
+    const current = yield* page({ sessionID: input.sessionID, limit: 50, before })
+    result.unshift(
+      ...current.items.filter(
+        (item) =>
+          item.info.id === input.messageID ||
+          (item.info.role === "assistant" && item.info.parentID === input.messageID),
+      ),
+    )
+    if (current.items.some((item) => item.info.id === input.messageID)) return result
+    if (!current.more || !current.cursor) return []
+    before = current.cursor
+  }
+})
+
 export function stream(sessionID: SessionID) {
   const size = 50
   return Effect.gen(function* () {
