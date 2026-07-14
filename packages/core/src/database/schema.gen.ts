@@ -77,6 +77,13 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`event_sync_order\` (
+          \`ordinal\` integer PRIMARY KEY AUTOINCREMENT,
+          \`event_id\` text NOT NULL,
+          CONSTRAINT \`fk_event_sync_order_event_id_event_id_fk\` FOREIGN KEY (\`event_id\`) REFERENCES \`event\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`event\` (
           \`id\` text PRIMARY KEY,
           \`aggregate_id\` text NOT NULL,
@@ -236,6 +243,7 @@ export default {
           CONSTRAINT \`fk_session_share_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
         );
       `)
+      yield* tx.run(`CREATE UNIQUE INDEX \`event_sync_order_event_id_idx\` ON \`event_sync_order\` (\`event_id\`);`)
       yield* tx.run(`CREATE UNIQUE INDEX \`event_aggregate_seq_idx\` ON \`event\` (\`aggregate_id\`,\`seq\`);`)
       yield* tx.run(`CREATE INDEX \`event_aggregate_type_seq_idx\` ON \`event\` (\`aggregate_id\`,\`type\`,\`seq\`);`)
       yield* tx.run(

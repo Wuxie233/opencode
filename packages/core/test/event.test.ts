@@ -8,7 +8,7 @@ import { SessionV1 } from "@opencode-ai/schema/session-v1"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
+import { EventSequenceTable, EventSyncOrderTable, EventTable } from "@opencode-ai/core/event/sql"
 import { Location } from "@opencode-ai/core/location"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
@@ -186,6 +186,49 @@ describe("EventV2", () => {
       )
 
       expect(received).toEqual(["projector", "commit:0"])
+    }),
+  )
+
+  it.effect("assigns durable events stable sync ordinals and removes them with the aggregate", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = EventV2.ID.create()
+      const first = yield* events.publish(SyncMessage, { id: aggregateID, text: "first" })
+      const second = yield* events.publish(SyncMessage, { id: aggregateID, text: "second" })
+
+      const rows = yield* db
+        .select()
+        .from(EventSyncOrderTable)
+        .where(eq(EventSyncOrderTable.event_id, first.id))
+        .all()
+        .pipe(Effect.orDie)
+      const next = yield* db
+        .select()
+        .from(EventSyncOrderTable)
+        .where(eq(EventSyncOrderTable.event_id, second.id))
+        .get()
+        .pipe(Effect.orDie)
+      expect(rows).toHaveLength(1)
+      expect(next?.ordinal).toBeGreaterThan(rows[0]?.ordinal ?? 0)
+
+      yield* events.remove(aggregateID)
+      expect(
+        yield* db
+          .select()
+          .from(EventSyncOrderTable)
+          .where(eq(EventSyncOrderTable.event_id, first.id))
+          .all()
+          .pipe(Effect.orDie),
+      ).toEqual([])
+      expect(
+        yield* db
+          .select()
+          .from(EventSyncOrderTable)
+          .where(eq(EventSyncOrderTable.event_id, second.id))
+          .all()
+          .pipe(Effect.orDie),
+      ).toEqual([])
     }),
   )
 

@@ -7,6 +7,7 @@ import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
 import { described } from "./metadata"
+import { HistoryEvent, HistoryPagePayload, HistoryPageResponse, HistoryPayload } from "@/sync/schema"
 
 const root = "/sync"
 export const ReplayEvent = Schema.Struct({
@@ -26,20 +27,12 @@ export const ReplayResponse = Schema.Struct({
 export const SessionPayload = Schema.Struct({
   sessionID: SessionID,
 })
-export const HistoryPayload = Schema.Record(Schema.String, NonNegativeInt)
-export const HistoryEvent = Schema.Struct({
-  id: EventV2.ID,
-  aggregate_id: Schema.String,
-  seq: NonNegativeInt,
-  type: Schema.String,
-  data: Schema.Record(Schema.String, Schema.Unknown),
-})
-
 export const SyncPaths = {
   start: `${root}/start`,
   replay: `${root}/replay`,
   steal: `${root}/steal`,
   history: `${root}/history`,
+  historyV2: `${root}/v2/history`,
 } as const
 
 export const SyncApi = HttpApi.make("sync")
@@ -91,6 +84,19 @@ export const SyncApi = HttpApi.make("sync")
             summary: "List sync events",
             description:
               "List sync events for all aggregates. Keys are aggregate IDs the client already knows about, values are the last known sequence ID. Events with seq > value are returned for those aggregates. Aggregates not listed in the input get their full history.",
+          }),
+        ),
+        HttpApiEndpoint.post("historyV2", SyncPaths.historyV2, {
+          query: WorkspaceRoutingQuery,
+          payload: HistoryPagePayload,
+          success: described(HistoryPageResponse, "Bounded sync event page"),
+          error: HttpApiError.BadRequest,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "sync.history.page",
+            summary: "Page sync events",
+            description:
+              "Read a bounded page of currently stored sync events from a stable server-issued watermark. Continuations must preserve the known aggregate state and return the server-issued cursor, watermark, and state token.",
           }),
         ),
       )
