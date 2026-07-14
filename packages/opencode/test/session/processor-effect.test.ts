@@ -1,10 +1,13 @@
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { EventV2 } from "@opencode-ai/core/event"
+import { EventTable } from "@opencode-ai/core/event/sql"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
 import { tool } from "ai"
-import { Cause, Effect, Exit, Fiber, Layer, Stream } from "effect"
+import { Cause, Effect, Exit, Fiber, Layer, Schema, Stream } from "effect"
+import { asc, eq } from "drizzle-orm"
 import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
@@ -21,12 +24,13 @@ import { SessionRetryControl } from "../../src/session/retry-control"
 import { SessionSummary } from "../../src/session/summary"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { pollWithTimeout, testEffect } from "../lib/effect"
 import { raw, reply, TestLLMServer } from "../lib/llm-server"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { LLMEvent } from "@opencode-ai/llm"
 
 const summary = Layer.succeed(
@@ -889,6 +893,144 @@ it.live("session.processor effect tests complete AI SDK tool calls when native f
         expect(call.state.metadata).toEqual({ source: "test" })
         expect(call.state.time.start).toBeDefined()
         expect(call.state.time.end).toBeDefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor durable parts replay to the exact terminal state", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const database = yield* Database.Service
+        const { db } = database
+        const durable = yield* EventV2Bridge.Service
+        const started = defer<void>()
+        const finish = defer<void>()
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.push(
+          reply()
+            .reason("think ")
+            .reason("through")
+            .text("answer ")
+            .text("done")
+            .tool("lookup", { query: "weather" })
+            .item(),
+        )
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "durable replay")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "durable replay" }],
+            tools: {
+              lookup: tool({
+                description: "Look up information",
+                inputSchema: z.object({ query: z.string() }),
+                execute: async (input) => {
+                  started.resolve()
+                  await finish.promise
+                  return {
+                    title: "Weather lookup",
+                    output: `result:${input.query}`,
+                    metadata: { phase: "complete" },
+                  }
+                },
+              }),
+            },
+          })
+          .pipe(Effect.forkChild)
+
+        yield* Effect.promise(() => started.promise)
+        yield* pollWithTimeout(
+          MessageV2.parts(msg.id).pipe(
+            Effect.map((parts) =>
+              parts.find((part): part is SessionV1.ToolPart => part.type === "tool" && part.state.status === "running"),
+            ),
+            Effect.provideService(Database.Service, database),
+          ),
+          "timed out waiting for running tool part",
+        )
+        const progress = yield* handle.updateToolCall("call_1", (part) => {
+          if (part.state.status !== "running") return part
+          return { ...part, state: { ...part.state, title: "Checking", metadata: { phase: "half" } } }
+        })
+        expect(progress?.state.status).toBe("running")
+        finish.resolve()
+        expect(yield* Fiber.join(run)).toBe("continue")
+
+        const terminal = yield* MessageV2.parts(msg.id)
+        const rows = yield* db
+          .select()
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, chat.id))
+          .orderBy(asc(EventTable.seq))
+          .all()
+          .pipe(Effect.orDie)
+        const partType = EventV2.versionedType(SessionV1.Event.PartUpdated.type, 1)
+        expect(rows.some((row) => row.type === EventV2.versionedType(SessionV1.Event.PartDelta.type, 1))).toBe(false)
+        const partRows = rows.filter((row) => row.type === partType)
+        const decodePart = Schema.decodeUnknownSync(SessionV1.Event.PartUpdated.data)
+        const assistantPartRows = partRows.filter((row) => decodePart(row.data).part.messageID === msg.id)
+        const assistantPartEvents = assistantPartRows.map((row) => decodePart(row.data).part)
+        const reasoningEvents = assistantPartEvents.filter(
+          (part): part is SessionV1.ReasoningPart => part.type === "reasoning",
+        )
+        const textEvents = assistantPartEvents.filter((part): part is SessionV1.TextPart => part.type === "text")
+        const toolEvents = assistantPartEvents.filter((part): part is SessionV1.ToolPart => part.type === "tool")
+        const measurement = {
+          events: assistantPartRows.length,
+          bytes: assistantPartRows.reduce((total, row) => total + Buffer.byteLength(JSON.stringify(row.data)), 0),
+          reasoning: reasoningEvents.length,
+          text: textEvents.length,
+          tool: toolEvents.length,
+          step: assistantPartEvents.filter((part) => part.type === "step-start" || part.type === "step-finish").length,
+        }
+
+        expect(measurement).toEqual({ events: 10, bytes: 3138, reasoning: 2, text: 2, tool: 4, step: 2 })
+        expect(reasoningEvents.map((part) => part.text)).toEqual(["", "think through"])
+        expect(textEvents.map((part) => part.text)).toEqual(["", "answer done"])
+        expect(toolEvents.map((part) => part.state.status)).toEqual(["pending", "running", "running", "completed"])
+        expect(toolEvents[2]).toMatchObject({ state: { title: "Checking", metadata: { phase: "half" } } })
+        expect(toolEvents[3]).toMatchObject({
+          state: { title: "Weather lookup", output: "result:weather", metadata: { phase: "complete" } },
+        })
+        console.info("SessionV1 durable part measurement", measurement)
+
+        const serialized = rows.map((row) => ({
+          id: row.id,
+          type: row.type,
+          seq: row.seq,
+          aggregateID: row.aggregate_id,
+          data: row.data,
+        }))
+        yield* durable.remove(chat.id)
+        yield* db.delete(SessionTable).where(eq(SessionTable.id, chat.id)).run().pipe(Effect.orDie)
+        expect(yield* db.select().from(MessageTable).where(eq(MessageTable.session_id, chat.id)).all()).toEqual([])
+        expect(yield* db.select().from(PartTable).where(eq(PartTable.session_id, chat.id)).all()).toEqual([])
+        yield* durable.replayAll(serialized)
+
+        expect(yield* MessageV2.parts(msg.id)).toEqual(terminal)
       }),
     { config: (url) => providerCfg(url) },
   ),
