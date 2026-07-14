@@ -1,5 +1,5 @@
-import { deflateSync, gzipSync } from "node:zlib"
-import { Effect } from "effect"
+import { deflate, gzip } from "node:zlib"
+import { Cause, Effect } from "effect"
 import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 
 // Keep the server's compressible content-type set stable across HTTP backend changes.
@@ -14,6 +14,18 @@ const STREAMING_POST_REGEX = /^\/session\/[^/]+\/(?:message|prompt_async)$/
 const THRESHOLD_BYTES = 1024
 
 type Encoding = "gzip" | "deflate"
+
+export function compressBody(body: Uint8Array, encoding: Encoding) {
+  return Effect.callback<Uint8Array, Cause.UnknownError>((resume) => {
+    const complete = (error: Error | null, result: Buffer) =>
+      resume(error ? Effect.fail(new Cause.UnknownError(error)) : Effect.succeed(result))
+    if (encoding === "gzip") {
+      gzip(body, complete)
+      return
+    }
+    deflate(body, complete)
+  })
+}
 
 function pickEncoding(acceptEncoding: string | undefined): Encoding | undefined {
   if (!acceptEncoding) return undefined
@@ -55,7 +67,7 @@ export const compressionLayer = HttpRouter.middleware<{ handles: unknown }>()((e
     if (!encoding) return response
 
     const compressed = yield* Effect.gen(function* () {
-      const result = encoding === "gzip" ? gzipSync(body.body) : deflateSync(body.body)
+      const result = yield* compressBody(body.body, encoding)
       yield* Effect.annotateCurrentSpan({
         "opencode.http.response.body.uncompressed_size": body.body.byteLength,
         "opencode.http.response.body.compressed_size": result.byteLength,

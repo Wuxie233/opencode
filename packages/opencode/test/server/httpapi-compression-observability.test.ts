@@ -1,16 +1,28 @@
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { expect } from "bun:test"
-import { Effect, Layer, Option, Tracer } from "effect"
+import { Effect, Fiber, Layer, Option, Tracer } from "effect"
 import {
   HttpClient,
   HttpClientRequest,
   HttpRouter,
   HttpServerResponse,
 } from "effect/unstable/http"
-import { compressionLayer } from "../../src/server/routes/instance/httpapi/middleware/compression"
+import { compressBody, compressionLayer } from "../../src/server/routes/instance/httpapi/middleware/compression"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.mergeAll(NodeHttpServer.layerTest, NodeServices.layer))
+
+it.live("moves buffered compression off the current JavaScript turn", () =>
+  Effect.gen(function* () {
+    const input = new TextEncoder().encode("compression-work-".repeat(65_536))
+
+    for (const encoding of ["gzip", "deflate"] as const) {
+      const fiber = Effect.runFork(compressBody(input, encoding))
+      expect(fiber.pollUnsafe()).toBeUndefined()
+      expect((yield* Fiber.join(fiber)).byteLength).toBeGreaterThan(0)
+    }
+  }),
+)
 
 it.live("attributes compressed response bytes and encoding", () =>
   Effect.gen(function* () {
