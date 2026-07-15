@@ -1,7 +1,7 @@
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Duration, Effect, Layer, Scope } from "effect"
+import { Cause, Duration, Effect, Exit, Layer, Scope } from "effect"
 import { TestLLMServer } from "../../lib/llm-server"
 import type { Config } from "../../../src/config/config"
 
@@ -93,16 +93,20 @@ function withContext<A, E>(
         const app = yield* Layer.buildWithMemoMap(modules.AppLayer, modules.memoMap, scope)
         yield* trace(options, scenario, `${label} runtime done`)
         const path = context.dir?.path
+        const instanceScope = path ? yield* Scope.make() : undefined
+        if (instanceScope) yield* Effect.addFinalizer(() => Scope.close(instanceScope, Exit.void))
         const instance = path
           ? yield* trace(options, scenario, `${label} instance load start`).pipe(
               Effect.andThen(
                 modules.InstanceStore.Service.use((store) => store.load({ directory: path })).pipe(
                   Effect.provide(app),
+                  Scope.provide(instanceScope ?? scope),
                   Effect.catchCause((cause) =>
                     Effect.sleep("100 millis").pipe(
                       Effect.andThen(
                         modules.InstanceStore.Service.use((store) => store.load({ directory: path })).pipe(
                           Effect.provide(app),
+                          Scope.provide(instanceScope ?? scope),
                         ),
                       ),
                       Effect.catchCause(() => Effect.failCause(cause)),

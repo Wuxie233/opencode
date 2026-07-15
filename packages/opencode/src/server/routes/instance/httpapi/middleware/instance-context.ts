@@ -1,7 +1,10 @@
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
+import { EffectBridge } from "@/effect/bridge"
 import { InstanceStore } from "@/project/instance-store"
-import { Effect, Layer } from "effect"
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { NodeHttpServerRequest } from "@effect/platform-node"
+import { IncomingMessage } from "node:http"
+import { Effect, Exit, Layer, Scope, Stream } from "effect"
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import { WorkspaceRouteContext } from "./workspace-routing"
 
@@ -23,13 +26,37 @@ function decode(input: string): string {
 function provideInstanceContext<E>(
   effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E>,
   store: InstanceStore.Interface,
-): Effect.Effect<HttpServerResponse.HttpServerResponse, E, WorkspaceRouteContext> {
+): Effect.Effect<HttpServerResponse.HttpServerResponse, E, WorkspaceRouteContext | HttpServerRequest.HttpServerRequest> {
   return Effect.gen(function* () {
     const route = yield* WorkspaceRouteContext
-    const ctx = yield* store.load({ directory: decode(route.directory) })
-    return yield* effect.pipe(
+    const scope = yield* Scope.make()
+    const ctx = yield* store.load({ directory: decode(route.directory) }).pipe(Scope.provide(scope))
+    const response = yield* effect.pipe(
       Effect.provideService(InstanceRef, ctx),
       Effect.provideService(WorkspaceRef, route.workspaceID),
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? Scope.close(scope, exit) : Effect.void)),
+    )
+    if (response.body._tag !== "Stream") {
+      yield* Scope.close(scope, Exit.void)
+      return response
+    }
+    const request = yield* HttpServerRequest.HttpServerRequest
+    if (request.source instanceof IncomingMessage) {
+      const bridge = yield* EffectBridge.make()
+      const incoming = NodeHttpServerRequest.toIncomingMessage(request)
+      const onSocketClose = () => {
+        bridge.fork(Scope.close(scope, Exit.void))
+      }
+      incoming.socket.once("close", onSocketClose)
+      yield* Scope.addFinalizer(scope, Effect.sync(() => incoming.socket.off("close", onSocketClose)))
+    }
+    return HttpServerResponse.setBody(
+      response,
+      HttpBody.stream(
+        response.body.stream.pipe(Stream.ensuring(Scope.close(scope, Exit.void))),
+        response.body.contentType,
+        response.body.contentLength,
+      ),
     )
   })
 }

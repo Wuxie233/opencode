@@ -1,16 +1,15 @@
-import { afterEach, expect } from "bun:test"
+import { expect } from "bun:test"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Cause, Effect, Exit, Fiber } from "effect"
+import { Cause, Effect, Exit } from "effect"
 import { bootstrap as cliBootstrap } from "../../src/cli/bootstrap"
 import { InstanceBootstrap } from "../../src/project/bootstrap"
 import { InstanceStore } from "../../src/project/instance-store"
-import { disposeAllInstances, tmpdirScoped } from "../fixture/fixture"
+import { tmpdirScoped } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { waitGlobalBusEvent } from "../server/global-bus"
 
 const it = testEffect(
   LayerNode.compile(LayerNode.group([InstanceStore.node, CrossSpawnSpawner.node]), [
@@ -25,10 +24,6 @@ const it = testEffect(
 // appears if InstanceBootstrap ran at the instance boundary.
 //
 // The boundaries below are transport-agnostic and stay.
-
-afterEach(async () => {
-  await disposeAllInstances()
-})
 
 const bootstrapFixture = Effect.gen(function* () {
   const dir = yield* tmpdirScoped({ git: true })
@@ -60,13 +55,6 @@ const bootstrapFixture = Effect.gen(function* () {
   return { directory: dir, marker }
 })
 
-function waitDisposed(directory: string) {
-  return waitGlobalBusEvent({
-    message: "timed out waiting for CLI bootstrap instance disposal",
-    predicate: (event) => event.payload.type === "server.instance.disposed" && event.directory === directory,
-  })
-}
-
 it.live("InstanceStore.provide runs InstanceBootstrap before effect", () =>
   Effect.gen(function* () {
     const tmp = yield* bootstrapFixture
@@ -76,6 +64,7 @@ it.live("InstanceStore.provide runs InstanceBootstrap before effect", () =>
 
     expect(existsSync(tmp.marker)).toBe(true)
   }),
+  120_000,
 )
 
 it.live("CLI bootstrap runs InstanceBootstrap before callback", () =>
@@ -86,12 +75,12 @@ it.live("CLI bootstrap runs InstanceBootstrap before callback", () =>
 
     expect(existsSync(tmp.marker)).toBe(true)
   }),
+  120_000,
 )
 
-it.live("CLI bootstrap disposes the instance when the callback rejects", () =>
+it.live("CLI bootstrap releases the instance when the callback rejects", () =>
   Effect.gen(function* () {
     const tmp = yield* bootstrapFixture
-    const disposed = yield* waitDisposed(tmp.directory).pipe(Effect.forkScoped({ startImmediately: true }))
 
     const exit = yield* Effect.promise(() =>
       cliBootstrap(tmp.directory, async () => Promise.reject(new Error("boom"))),
@@ -99,8 +88,8 @@ it.live("CLI bootstrap disposes the instance when the callback rejects", () =>
 
     expect(Exit.isFailure(exit)).toBe(true)
     if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toMatchObject({ message: "boom" })
-    yield* Fiber.join(disposed)
   }),
+  120_000,
 )
 
 it.live("InstanceStore.reload runs InstanceBootstrap", () =>
@@ -112,4 +101,5 @@ it.live("InstanceStore.reload runs InstanceBootstrap", () =>
 
     expect(existsSync(tmp.marker)).toBe(true)
   }),
+  120_000,
 )

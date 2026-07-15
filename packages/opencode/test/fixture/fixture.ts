@@ -28,17 +28,14 @@ export async function provideTestInstance<R>(input: {
   init?: Effect.Effect<void>
   fn: (ctx: InstanceContext) => R
 }) {
-  const ctx = await InstanceRuntime.load({ directory: input.directory })
-  try {
+  return InstanceRuntime.provide({ directory: input.directory }, async (ctx) => {
     if (input.init) await Effect.runPromise(input.init.pipe(Effect.provideService(InstanceRef, ctx)))
     return await input.fn(ctx)
-  } finally {
-    await InstanceRuntime.disposeInstance(ctx)
-  }
+  })
 }
 
 export async function withTestInstance<R>(input: { directory: string; fn: (ctx: InstanceContext) => R }) {
-  return input.fn(await InstanceRuntime.load({ directory: input.directory }))
+  return InstanceRuntime.provide({ directory: input.directory }, async (ctx) => input.fn(ctx))
 }
 
 export async function reloadTestInstance(input: { directory: string }) {
