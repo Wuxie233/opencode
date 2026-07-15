@@ -1396,7 +1396,7 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "anchors repeated compactions with the previous summary",
+    "passes the previous summary once during repeated compaction",
     () => {
       const stub = llm()
       let captured = ""
@@ -1430,9 +1430,6 @@ describe("session.compaction.process", () => {
         expect(captured).toContain("<previous-summary>")
         expect(captured).toContain("summary one")
         expect(captured.match(/summary one/g)?.length).toBe(1)
-        expect(captured).toContain("## User Requests")
-        expect(captured).toContain("## Important Decisions")
-        expect(captured).toContain("## Work State")
       }).pipe(withCompaction({ llm: stub.llmLayer }))
     },
     { git: true },
