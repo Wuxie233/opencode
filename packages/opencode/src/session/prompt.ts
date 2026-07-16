@@ -1132,7 +1132,7 @@ const layer = Layer.effect(
             !hasToolCalls &&
             lastAssistant.parentID === lastUser.id &&
             lastAssistantMsg !== undefined &&
-            hasNonEmptyText(lastAssistantMsg.parts)
+            (lastAssistant.finish !== "stop" || hasNonEmptyText(lastAssistantMsg.parts))
           ) {
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),

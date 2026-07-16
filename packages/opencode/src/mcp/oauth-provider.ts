@@ -30,6 +30,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     protected config: McpOAuthConfig,
     private callbacks: McpOAuthCallbacks,
     protected auth: McpAuth.Interface,
+    private flowKey = mcpName,
   ) {}
 
   get redirectUrl(): string {
@@ -129,25 +130,25 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async saveCodeVerifier(codeVerifier: string): Promise<void> {
-    await Effect.runPromise(this.auth.updateCodeVerifier(this.mcpName, codeVerifier))
+    await Effect.runPromise(this.auth.updateFlowCodeVerifier(this.flowKey, codeVerifier))
   }
 
   async codeVerifier(): Promise<string> {
-    const entry = await Effect.runPromise(this.auth.get(this.mcpName))
-    if (!entry?.codeVerifier) {
+    const codeVerifier = await Effect.runPromise(this.auth.getFlowCodeVerifier(this.flowKey))
+    if (!codeVerifier) {
       throw new Error(`No code verifier saved for MCP server: ${this.mcpName}`)
     }
-    return entry.codeVerifier
+    return codeVerifier
   }
 
   async saveState(state: string): Promise<void> {
-    await Effect.runPromise(this.auth.updateOAuthState(this.mcpName, state))
+    await Effect.runPromise(this.auth.updateFlowOAuthState(this.flowKey, state))
   }
 
   async state(): Promise<string> {
-    const entry = await Effect.runPromise(this.auth.get(this.mcpName))
-    if (entry?.oauthState) {
-      return entry.oauthState
+    const state = await Effect.runPromise(this.auth.getFlowOAuthState(this.flowKey))
+    if (state) {
+      return state
     }
 
     // Generate a new state if none exists — the SDK calls state() as a
@@ -157,7 +158,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     const newState = Array.from(crypto.getRandomValues(new Uint8Array(32)))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("")
-    await Effect.runPromise(this.auth.updateOAuthState(this.mcpName, newState))
+    await Effect.runPromise(this.auth.updateFlowOAuthState(this.flowKey, newState))
     return newState
   }
 

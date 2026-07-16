@@ -133,9 +133,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  const hasMcpResourceServer = Object.values(yield* mcp.clients()).some(
-    (client) => !!client.getServerCapabilities()?.resources,
-  )
+  const hasMcpResourceServer = Object.values(yield* mcp.clients()).some((client) => client.capabilities.resources)
   if (hasMcpResourceServer) {
     tools[MCP_RESOURCE_TOOLS.list] = tool({
       description:
@@ -159,7 +157,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             const ctx = context(toRecord(args), opts)
             const clients = yield* mcp.clients()
             const resourceServers = Object.entries(clients)
-              .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
+              .filter((entry) => entry[1].capabilities.resources)
               .map((entry) => entry[0])
               .sort((a, b) => a.localeCompare(b))
             if (parsed.server && !resourceServers.includes(parsed.server)) {
@@ -242,7 +240,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             const ctx = context(toRecord(args), opts)
             const clients = yield* mcp.clients()
             const resourceServers = Object.entries(clients)
-              .filter((entry) => !!entry[1].getServerCapabilities()?.resources)
+              .filter((entry) => entry[1].capabilities.resources)
               .map((entry) => entry[0])
               .sort((a, b) => a.localeCompare(b))
             if (parsed.server && !resourceServers.includes(parsed.server)) {
@@ -332,7 +330,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             if (!client) {
               throw new Error(`MCP server "${parsed.server}" is not connected`)
             }
-            if (!client.getServerCapabilities()?.resources) {
+            if (!client.capabilities.resources) {
               throw new Error(`MCP server "${parsed.server}" does not support resources`)
             }
             yield* plugin.trigger(
@@ -388,7 +386,25 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   if (flags.experimentalCodeMode) return tools
 
   for (const [key, entry] of Object.entries(yield* mcp.tools())) {
-    const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
+    const item = McpCatalog.convertToolWithCall(
+      entry.def,
+      (request, options) =>
+        run.promise(
+          mcp
+            .callTool(entry.clientName, request.name, request.arguments, {
+              abort: options.signal,
+              timeout: options.timeout,
+            })
+            .pipe(
+              Effect.flatMap((result) =>
+                result
+                  ? Effect.succeed(result)
+                  : Effect.fail(new Error(`MCP server "${entry.clientName}" is not connected`)),
+              ),
+            ),
+        ),
+      entry.timeout,
+    )
     const execute = item.execute
     if (!execute) continue
 

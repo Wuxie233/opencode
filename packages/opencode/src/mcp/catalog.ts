@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import {
   CallToolResultSchema,
+  type CallToolResult,
   ListToolsResultSchema,
   ToolSchema,
   type Tool as MCPToolDef,
@@ -40,6 +41,17 @@ export function defs(client: Client, timeout?: number) {
 }
 
 export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number): Tool {
+  return convertToolWithCall(mcpTool, (args, options) => client.callTool(args, CallToolResultSchema, options), timeout)
+}
+
+export function convertToolWithCall(
+  mcpTool: MCPToolDef,
+  call: (
+    args: { name: string; arguments: Record<string, unknown> },
+    options: { resetTimeoutOnProgress: true; signal?: AbortSignal; timeout?: number; onprogress: () => void },
+  ) => Promise<CallToolResult>,
+  timeout?: number,
+): Tool {
   const inputSchema: JSONSchema7 = {
     ...(mcpTool.inputSchema as JSONSchema7),
     type: "object",
@@ -51,12 +63,11 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(inputSchema),
     execute: async (args: unknown, options) => {
-      const result = await client.callTool(
+      const result = await call(
         {
           name: mcpTool.name,
           arguments: (args || {}) as Record<string, unknown>,
         },
-        CallToolResultSchema,
         {
           resetTimeoutOnProgress: true,
           signal: options.abortSignal,

@@ -14,6 +14,7 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Global } from "@opencode-ai/core/global"
 import { openEditor } from "@opencode-ai/tui/editor"
 import { registerOpencodeKeymap } from "@opencode-ai/tui/keymap"
+import { Sigint } from "@/cli/sigint"
 import { Session as SessionApi } from "@/session/session"
 import * as Locale from "@/util/locale"
 import { resolveInteractiveStdin } from "./runtime.stdin"
@@ -228,6 +229,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
     const { RunFooter } = await footerTask
     let closed = false
     let sigintRegistered = false
+    let unregisterSigint: (() => void) | undefined
 
     const footer = new RunFooter(renderer, {
       directory: input.directory,
@@ -260,9 +262,9 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
         }
 
         await renderer.idle().catch(() => {})
-        const ignore = () => {}
+        const ignore = () => true
         detachSigint()
-        process.on("SIGINT", ignore)
+        const unregisterIgnore = Sigint.register(ignore)
         try {
           return await openEditor({
             value,
@@ -271,7 +273,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
             stdin: source.stdin,
           })
         } finally {
-          process.off("SIGINT", ignore)
+          unregisterIgnore()
           attachSigint()
         }
       },
@@ -279,7 +281,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
     })
 
     const sigint = () => {
-      footer.requestExit()
+      return footer.requestExit()
     }
 
     const attachSigint = () => {
@@ -287,7 +289,7 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
         return
       }
 
-      process.on("SIGINT", sigint)
+      unregisterSigint = Sigint.register(sigint)
       sigintRegistered = true
     }
 
@@ -296,7 +298,8 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
         return
       }
 
-      process.off("SIGINT", sigint)
+      unregisterSigint?.()
+      unregisterSigint = undefined
       sigintRegistered = false
     }
 

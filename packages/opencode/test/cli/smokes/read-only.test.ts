@@ -14,9 +14,13 @@
 // Speed: each test pays ~1.5s for bun startup. 7 tests serialize within this
 // file. See script/prebuild-test-cli.ts for an opt-in pre-built binary that
 // cuts per-spawn cost when this suite gets bigger.
+import path from "node:path"
 import { describe, expect } from "bun:test"
 import { Effect } from "effect"
 import { cliIt } from "../../lib/cli-process"
+import { pollWithTimeout } from "../../lib/effect"
+
+const stdioFixture = path.join(import.meta.dir, "../../fixture/mcp-lifecycle-stdio.ts")
 
 describe("opencode read-only commands (smoke)", () => {
   // `mcp list` reads MCP server config and pings each one. With the empty
@@ -28,6 +32,45 @@ describe("opencode read-only commands (smoke)", () => {
       Effect.gen(function* () {
         const r = yield* opencode.spawn(["mcp", "list"])
         opencode.expectExit(r, 0, "mcp list")
+      }),
+    60_000,
+  )
+
+  cliIt.live(
+    "mcp list: disposes local MCP processes before exiting",
+    ({ home, opencode }) =>
+      Effect.gen(function* () {
+        const pidFile = path.join(home, "mcp-exit.pid")
+        const releaseFile = path.join(home, "mcp-exit.release")
+        const result = yield* opencode.spawn(["mcp", "list"], {
+          env: {
+            MCP_LIFECYCLE_PID_FILE: pidFile,
+            MCP_LIFECYCLE_RELEASE_FILE: releaseFile,
+            OPENCODE_CONFIG_CONTENT: JSON.stringify({
+              mcp: {
+                local: {
+                  type: "local",
+                  command: [process.execPath, stdioFixture, "--orphan-parent"],
+                },
+              },
+            }),
+          },
+        })
+        opencode.expectExit(result, 0, "mcp list local process cleanup")
+        const pids = (yield* Effect.promise(() => Bun.file(pidFile).text())).trim().split("\n").map(Number)
+        for (const pid of pids) {
+          yield* pollWithTimeout(
+            Effect.sync(() => {
+              try {
+                process.kill(pid, 0)
+                return undefined
+              } catch {
+                return true
+              }
+            }),
+            `MCP process ${pid} survived CLI exit`,
+          )
+        }
       }),
     60_000,
   )

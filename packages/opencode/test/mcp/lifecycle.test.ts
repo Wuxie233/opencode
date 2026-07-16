@@ -14,14 +14,28 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit } from "effect"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, Scope } from "effect"
+import { TestClock } from "effect/testing"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { MCP } from "../../src/mcp/index"
+import { ConnectionPool } from "../../src/mcp/connection-pool"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
-import { TestInstance } from "../fixture/fixture"
+import { ProcessPressure } from "../../src/observability/process-pressure"
+import { InstanceBootstrap } from "../../src/project/bootstrap-service"
+import { InstanceStore } from "../../src/project/instance-store"
+import { TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(MCP.node))
+const instanceIt = testEffect(
+  LayerNode.compile(LayerNode.group([MCP.node, ConnectionPool.node, InstanceStore.node, CrossSpawnSpawner.node]), [
+    [
+      InstanceStore.bootstrapNode,
+      Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void })),
+    ],
+  ]),
+)
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 
 type Page<T> = { items: T[]; nextCursor?: string }
@@ -40,6 +54,7 @@ interface LifecycleServerState {
   roots?: Array<{ uri: string; name?: string }>
   requests: string[]
   aborted: number
+  sessions: number
 }
 
 function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructions?: string; requestRoots?: boolean }) {
@@ -53,6 +68,7 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         resourceTemplates: [],
         requests: [],
         aborted: 0,
+        sessions: 0,
       }
 
       const makeProtocol = async () => {
@@ -101,6 +117,7 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         }
 
         protocol.oninitialized = () => {
+          state.sessions++
           if (!input?.requestRoots) return
           if (!protocol.getClientCapabilities()?.roots) return
           void Bun.sleep(25)
@@ -133,6 +150,51 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         },
         close: async () => {
           await current.protocol.close().catch(() => {})
+          http.stop(true)
+        },
+      }
+    }),
+    (server) => Effect.promise(server.close),
+  )
+}
+
+function multiSessionLifecycleServer() {
+  return Effect.acquireRelease(
+    Effect.promise(async () => {
+      let sessions = 0
+      const protocols = new Set<Server>()
+      const transports = new Map<string, WebStandardStreamableHTTPServerTransport>()
+      const create = async () => {
+        const protocol = new Server({ name: "mcp-lifecycle-multi", version: "1.0.0" }, { capabilities: { tools: {} } })
+        const transport = new WebStandardStreamableHTTPServerTransport({
+          sessionIdGenerator: () => crypto.randomUUID(),
+          enableJsonResponse: true,
+        })
+        protocol.setRequestHandler(ListToolsRequestSchema, () => Promise.resolve({ tools: [] }))
+        protocol.oninitialized = () => {
+          sessions++
+          if (transport.sessionId) transports.set(transport.sessionId, transport)
+        }
+        await protocol.connect(transport)
+        protocols.add(protocol)
+        return transport
+      }
+      const http = Bun.serve({
+        port: 0,
+        async fetch(request) {
+          const sessionID = request.headers.get("mcp-session-id")
+          const transport = sessionID ? transports.get(sessionID) : await create()
+          if (!transport) return new Response("Unknown session", { status: 404 })
+          const response = await transport.handleRequest(request)
+          if (transport.sessionId) transports.set(transport.sessionId, transport)
+          return response
+        },
+      })
+      return {
+        url: http.url.toString(),
+        sessions: () => sessions,
+        close: async () => {
+          await Promise.all([...protocols].map((protocol) => protocol.close()))
           http.stop(true)
         },
       }
@@ -344,6 +406,72 @@ it.instance("add() closes the old protocol session when replacing a server", () 
   }),
 )
 
+instanceIt.effect("reuses one protocol session after same-directory instance disposal and recreation", () =>
+  Effect.gen(function* () {
+    const directory = yield* tmpdirScoped({ git: true })
+    const server = yield* lifecycleServer()
+    const store = yield* InstanceStore.Service
+
+    yield* store.provide(
+      { directory },
+      MCP.Service.use((mcp) => mcp.add("pooled-server", remote(server.url)).pipe(Effect.asVoid)),
+    )
+    expect(server.state.sessions).toBe(1)
+
+    yield* store.disposeDirectory(directory)
+    expect(ProcessPressure.snapshot().liveInstances).toBe(0)
+    expect(server.state.aborted).toBe(0)
+
+    yield* store.provide(
+      { directory },
+      MCP.Service.use((mcp) => mcp.add("pooled-server", remote(server.url)).pipe(Effect.asVoid)),
+    )
+    expect(server.state.sessions).toBe(1)
+
+    yield* store.disposeDirectory(directory)
+    expect(ProcessPressure.snapshot().liveInstances).toBe(0)
+    expect(server.state.aborted).toBe(0)
+
+    yield* TestClock.adjust("2 hours")
+    yield* Effect.promise(() => Bun.sleep(25))
+    expect(server.state.aborted).toBeGreaterThan(0)
+  }),
+)
+
+instanceIt.effect("retains a replacement plan after an invalidated active connection releases", () =>
+  Effect.gen(function* () {
+    const directory = yield* tmpdirScoped({ git: true })
+    const server = yield* multiSessionLifecycleServer()
+    const pool = yield* ConnectionPool.Service
+    const connection = ConnectionPool.input(directory, "generation-server", { type: "remote", url: server.url })
+    const entered = yield* Deferred.make<void>()
+    const release = yield* Deferred.make<void>()
+    const active = yield* pool
+      .use(connection, () => Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release))))
+      .pipe(Effect.forkScoped)
+
+    yield* Deferred.await(entered)
+    yield* pool.invalidate(connection.key)
+    yield* pool.startAuth(connection)
+    const replacementEntered = yield* Deferred.make<void>()
+    const replacementRelease = yield* Deferred.make<void>()
+    const replacement = yield* pool
+      .use(connection, () =>
+        Deferred.succeed(replacementEntered, undefined).pipe(Effect.andThen(Deferred.await(replacementRelease))),
+      )
+      .pipe(Effect.forkScoped)
+    yield* Deferred.await(replacementEntered)
+    yield* Deferred.succeed(release, undefined)
+    yield* Fiber.join(active)
+
+    yield* TestClock.adjust("2 hours")
+    yield* pool.open(connection)
+    expect(server.sessions()).toBe(2)
+    yield* Deferred.succeed(replacementRelease, undefined)
+    yield* Fiber.join(replacement)
+  }),
+)
+
 it.instance("one failed server does not affect another connected server", () =>
   Effect.gen(function* () {
     const good = yield* lifecycleServer()
@@ -428,8 +556,13 @@ it.instance("uses per-server timeouts for prompt and resource requests", () =>
     const mcp = yield* MCP.Service
     yield* mcp.add("timeout-server", remote(server.url, 50))
 
-    expect(yield* mcp.getPrompt("timeout-server", "test")).toBeUndefined()
-    expect(yield* mcp.readResource("timeout-server", "test://resource")).toBeUndefined()
+    const prompt = yield* Effect.exit(mcp.getPrompt("timeout-server", "test"))
+    expect(Exit.isFailure(prompt)).toBe(true)
+    if (Exit.isFailure(prompt)) expect(Cause.squash(prompt.cause)).toMatchObject({ code: -32001 })
+
+    const resource = yield* Effect.exit(mcp.readResource("timeout-server", "test://resource"))
+    expect(Exit.isFailure(resource)).toBe(true)
+    if (Exit.isFailure(resource)) expect(Cause.squash(resource.cause)).toMatchObject({ code: -32001 })
   }),
 )
 
@@ -501,7 +634,7 @@ it.instance("local stdio timeout terminates the real server process", () =>
     const mcp = yield* MCP.Service
     const result = yield* mcp.add("hanging-stdio", {
       type: "local",
-      command: [process.execPath, stdioFixture, "--hang"],
+      command: ["sh", "-c", 'printf "%s\\n" "$$" > "$MCP_LIFECYCLE_PID_FILE"; exec sleep 600'],
       environment: { MCP_LIFECYCLE_PID_FILE: pidFile },
       timeout: 100,
     })
@@ -524,6 +657,198 @@ it.instance("local stdio timeout terminates the real server process", () =>
         }
       }),
       "stdio fixture process was not terminated",
+    )
+  }),
+)
+
+it.instance("local stdio timeout terminates spawned descendants", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const pidFile = path.join(test.directory, "mcp-child.pid")
+    const mcp = yield* MCP.Service
+    const result = yield* mcp.add("hanging-stdio-child", {
+      type: "local",
+      command: [
+        "sh",
+        "-c",
+        'sleep 600 & child="$$!"; printf "%s\\n%s\\n" "$$" "$child" > "$MCP_LIFECYCLE_PID_FILE"; wait',
+      ],
+      environment: { MCP_LIFECYCLE_PID_FILE: pidFile },
+      timeout: 100,
+    })
+
+    expect(statusName(result.status, "hanging-stdio-child")).toBe("failed")
+    const pids = yield* pollWithTimeout(
+      Effect.promise(async () => {
+        const file = Bun.file(pidFile)
+        return (await file.exists()) ? (await file.text()).trim().split("\n").map(Number) : undefined
+      }),
+      "stdio fixture did not publish parent and child pids",
+    )
+    for (const pid of pids) {
+      yield* pollWithTimeout(
+        Effect.sync(() => {
+          try {
+            process.kill(pid, 0)
+            return undefined
+          } catch {
+            return true
+          }
+        }),
+        `stdio fixture pid ${pid} was not terminated`,
+      )
+    }
+  }),
+)
+
+it.instance("disconnect terminates a descendant after its stdio launcher exits", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const pidFile = path.join(test.directory, "mcp-orphan.pid")
+    const releaseFile = path.join(test.directory, "mcp-orphan.release")
+    const mcp = yield* MCP.Service
+    const result = yield* mcp.add("orphan-stdio", {
+      type: "local",
+      command: [process.execPath, stdioFixture, "--orphan-parent"],
+      environment: {
+        MCP_LIFECYCLE_PID_FILE: pidFile,
+        MCP_LIFECYCLE_RELEASE_FILE: releaseFile,
+      },
+    })
+
+    expect(statusName(result.status, "orphan-stdio")).toBe("connected")
+    const [parent, child] = yield* pollWithTimeout(
+      Effect.promise(async () => {
+        const file = Bun.file(pidFile)
+        return (await file.exists()) ? (await file.text()).trim().split("\n").map(Number) : undefined
+      }),
+      "stdio launcher did not publish parent and child pids",
+    )
+    expect(parent).toBeNumber()
+    expect(child).toBeNumber()
+    yield* Effect.promise(() => Bun.write(releaseFile, "release"))
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(parent, 0)
+          return undefined
+        } catch {
+          return true
+        }
+      }),
+      "stdio launcher did not exit",
+    )
+
+    yield* mcp.disconnect("orphan-stdio")
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(child, 0)
+          return undefined
+        } catch {
+          return true
+        }
+      }),
+      "reparented stdio descendant was not terminated",
+    )
+  }),
+)
+
+it.instance("pool layer shutdown terminates a descendant after its stdio launcher exits", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const pidFile = path.join(test.directory, "mcp-pool-shutdown.pid")
+    const releaseFile = path.join(test.directory, "mcp-pool-shutdown.release")
+    const scope = yield* Scope.make()
+    const context = yield* Layer.build(LayerNode.compile(ConnectionPool.node)).pipe(Scope.provide(scope))
+    const pool = Context.get(context, ConnectionPool.Service)
+    const connection = ConnectionPool.input(test.directory, "orphan-stdio-shutdown", {
+      type: "local",
+      command: [process.execPath, stdioFixture, "--orphan-parent"],
+      environment: {
+        MCP_LIFECYCLE_PID_FILE: pidFile,
+        MCP_LIFECYCLE_RELEASE_FILE: releaseFile,
+      },
+    })
+
+    yield* pool.open(connection)
+    const [parent, child] = yield* pollWithTimeout(
+      Effect.promise(async () => {
+        const file = Bun.file(pidFile)
+        return (await file.exists()) ? (await file.text()).trim().split("\n").map(Number) : undefined
+      }),
+      "stdio launcher did not publish parent and child pids",
+    )
+    expect(parent).toBeNumber()
+    expect(child).toBeNumber()
+    yield* Effect.promise(() => Bun.write(releaseFile, "release"))
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(parent, 0)
+          return undefined
+        } catch {
+          return true
+        }
+      }),
+      "stdio launcher did not exit",
+    )
+
+    yield* Scope.close(scope, Exit.void)
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(child, 0)
+          return undefined
+        } catch {
+          return true
+        }
+      }),
+      "reparented stdio descendant was not terminated by pool shutdown",
+    )
+  }),
+)
+
+it.instance("local stdio natural close terminates a reparented descendant", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    const pidFile = path.join(test.directory, "mcp-natural-close.pid")
+    const mcp = yield* MCP.Service
+    const result = yield* mcp.add("closing-stdio-child", {
+      type: "local",
+      command: [process.execPath, stdioFixture, "--exit-parent-child"],
+      environment: { MCP_LIFECYCLE_PID_FILE: pidFile },
+    })
+
+    expect(statusName(result.status, "closing-stdio-child")).toBe("connected")
+    const pids = yield* pollWithTimeout(
+      Effect.promise(async () => {
+        const file = Bun.file(pidFile)
+        return (await file.exists()) ? (await file.text()).trim().split("\n").map(Number) : undefined
+      }),
+      "stdio fixture did not publish parent and child pids",
+    )
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(pids[0], 0)
+          return undefined
+        } catch {
+          return true
+        }
+      }),
+      "stdio fixture parent did not exit",
+    )
+    yield* pollWithTimeout(
+      Effect.sync(() => {
+        try {
+          process.kill(pids[1], 0)
+          return undefined
+        } catch {
+          return true
+        }
+      }),
+      "stdio fixture descendant was not terminated after natural close",
     )
   }),
 )

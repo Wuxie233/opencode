@@ -29,8 +29,29 @@ import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+import { Sigint } from "./cli/sigint"
+import { withTimeout } from "./util/timeout"
 
 const args = hideBin(process.argv)
+
+let exiting = false
+const exit = async (code = process.exitCode ?? 0, timeout?: number) => {
+  if (exiting) return
+  exiting = true
+  const { AppRuntime } = await import("./effect/app-runtime")
+  try {
+    const disposal = AppRuntime.dispose()
+    await (timeout === undefined ? disposal : withTimeout(disposal, timeout)).catch(() => {})
+  } finally {
+    process.exit(code)
+  }
+}
+
+process.on("SIGINT", () => {
+  if (Sigint.dispatch()) return
+  void exit(130, 5_000)
+})
+process.on("SIGTERM", () => void exit(143, 5_000))
 
 function show(out: string) {
   const text = out.trimStart()
@@ -111,7 +132,7 @@ const cli = yargs(args)
       cli.showHelp(show)
     }
     if (err) throw err
-    process.exit(1)
+    process.exitCode = 1
   })
   .strict()
 
@@ -138,5 +159,5 @@ try {
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.
   // Explicitly exit to avoid any hanging subprocesses.
-  process.exit()
+  await exit(process.exitCode ?? 0, 5_000)
 }

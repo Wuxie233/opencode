@@ -69,10 +69,14 @@ export const rpc = {
     )
   },
   async shutdown() {
-    await InstanceRuntime.disposeAllInstances()
-    if (server) await server.stop(true)
-    process.off("unhandledRejection", onUnhandledRejection)
-    process.off("uncaughtException", onUncaughtException)
+    try {
+      await InstanceRuntime.disposeAllInstances()
+      if (server) await server.stop(true)
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection)
+      process.off("uncaughtException", onUncaughtException)
+      await AppRuntime.dispose()
+    }
   },
 }
 

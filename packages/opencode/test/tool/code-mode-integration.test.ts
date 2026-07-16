@@ -10,7 +10,6 @@ import * as Truncate from "@/tool/truncate"
 import { MessageID, SessionID } from "@/session/schema"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
-import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import {
   CallToolRequestSchema,
   LATEST_PROTOCOL_VERSION,
@@ -22,6 +21,7 @@ import { Cause, Effect, Exit, Layer } from "effect"
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
 const SERVER = "fixtures"
+const CLIENT_INFO = { capabilities: { tools: true, prompts: false, resources: false } } satisfies MCP.ClientInfo
 
 const ctx: Tool.Context = {
   sessionID: SessionID.make("ses_code-mode-int"),
@@ -135,7 +135,7 @@ async function buildTool() {
   const listed = (await client.listTools()).tools as MCPToolDef[]
   const mcpTools: Record<string, MCP.McpTool> = {}
   for (const def of listed) {
-    mcpTools[McpCatalog.toolName(SERVER, def.name)] = { def, client: client as unknown as Client }
+    mcpTools[McpCatalog.toolName(SERVER, def.name)] = { def, clientName: SERVER }
   }
 
   const layer = Layer.mergeAll(
@@ -150,7 +150,8 @@ async function buildTool() {
     Layer.mock(Session.Service, { get: () => Effect.succeed({ permission: [] } as any) }),
     Layer.mock(MCP.Service, {
       tools: () => Effect.succeed(mcpTools),
-      clients: () => Effect.succeed({ [SERVER]: {} as any }),
+      clients: () => Effect.succeed({ [SERVER]: CLIENT_INFO }),
+      callTool: (_client, name, args) => Effect.promise(() => client.callTool({ name, arguments: args })),
     }),
   )
   return {
