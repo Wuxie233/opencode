@@ -1,10 +1,12 @@
 import { Platform, usePlatform } from "@/context/platform"
 import { makePersisted, type AsyncStorage, type SyncStorage } from "@solid-primitives/storage"
 import { checksum } from "@opencode-ai/core/util/encode"
-import { createResource, type Accessor } from "solid-js"
+import { createSignal, type Accessor } from "solid-js"
 import type { SetStoreFunction, Store } from "solid-js/store"
 import { pathKey } from "@/utils/path-key"
 import { ScopedKey, ServerScope, type ServerScope as ServerScopeValue } from "@/utils/server-scope"
+import { UI_STATE_CONTRACT_VERSION } from "@/utils/ui-state-contract"
+import { resolveWebStateServer, webStateTransport } from "@/utils/web-state"
 
 type InitType = Promise<string> | string | null
 type PersistedWithReady<T> = [
@@ -14,6 +16,20 @@ type PersistedWithReady<T> = [
   Accessor<boolean> & { promise: undefined | Promise<any> },
 ]
 
+type MaybePromise<T> = T | Promise<T>
+
+export type PersistServerRecord = {
+  value: unknown
+  version: string
+  updated_at: number
+}
+
+type PersistServer = {
+  group: string
+  scope: ServerScopeValue
+  directory?: string
+}
+
 type PersistTarget = {
   storage?: string
   scope?: "window"
@@ -21,12 +37,15 @@ type PersistTarget = {
   key: string
   legacy?: string[]
   migrate?: (value: unknown) => unknown
+  server?: PersistServer
 }
 
 const LEGACY_STORAGE = "default.dat"
 const GLOBAL_STORAGE = "opencode.global.dat"
 const WINDOW_STORAGE = "opencode.window"
 const LOCAL_PREFIX = "opencode."
+const SERVER_META_PREFIX = "__server:"
+const SERVER_TIMEOUT_MS = 2_000
 const fallback = new Map<string, boolean>()
 
 const CACHE_MAX_ENTRIES = 500
@@ -169,6 +188,69 @@ function snapshot(value: unknown) {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function serverMetadataKey(key: string) {
+  return `${SERVER_META_PREFIX}${key}`
+}
+
+function isServerRecord(value: unknown): value is PersistServerRecord {
+  if (!isRecord(value)) return false
+  if (!("value" in value)) return false
+  if (value.version !== UI_STATE_CONTRACT_VERSION) return false
+  if (typeof value.updated_at !== "number") return false
+  if (!Number.isFinite(value.updated_at)) return false
+  if (value.updated_at < 0) return false
+  return true
+}
+
+function serverMetadata(value: string | null) {
+  if (value === null) return 0
+  const parsed = parse(value)
+  if (!isServerRecord(parsed)) return 0
+  return parsed.updated_at
+}
+
+async function serverCall<T>(input: { run: () => MaybePromise<T>; timeoutMs?: number }) {
+  const timeoutMs = input.timeoutMs ?? SERVER_TIMEOUT_MS
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      Promise.resolve(input.run()),
+      new Promise<undefined>((resolve) => {
+        timeout = setTimeout(() => resolve(undefined), timeoutMs)
+      }),
+    ])
+  } catch {
+    return undefined
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+async function serverAttempt(input: { run: () => MaybePromise<unknown>; timeoutMs?: number }) {
+  const timeoutMs = input.timeoutMs ?? SERVER_TIMEOUT_MS
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      Promise.resolve(input.run()).then(() => true),
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => resolve(false), timeoutMs)
+      }),
+    ])
+  } catch {
+    return false
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
+async function optionalStorage(input: () => MaybePromise<unknown>) {
+  try {
+    await input()
+  } catch {
+    return
+  }
 }
 
 function merge(defaults: unknown, value: unknown): unknown {
@@ -372,8 +454,20 @@ function legacyWorkspaceStorage(dir: string) {
 }
 
 function serverWorkspaceTarget(scope: ServerScopeValue, dir: string, key: string, legacy?: string[]): PersistTarget {
-  if (scope !== ServerScope.local) return { storage: workspaceStorage(ScopedKey.from(scope, pathKey(dir))), key }
-  return { storage: workspaceStorage(pathKey(dir)), legacyStorageNames: legacyWorkspaceStorage(dir), key, legacy }
+  if (scope !== ServerScope.local) {
+    return {
+      storage: workspaceStorage(ScopedKey.from(scope, pathKey(dir))),
+      key,
+      server: { group: key, scope, directory: dir },
+    }
+  }
+  return {
+    storage: workspaceStorage(pathKey(dir)),
+    legacyStorageNames: legacyWorkspaceStorage(dir),
+    key,
+    legacy,
+    server: { group: key, scope, directory: dir },
+  }
 }
 
 function localStorageWithPrefix(prefix: string): SyncStorage {
@@ -463,6 +557,83 @@ function localStorageDirect(): SyncStorage {
   }
 }
 
+function serverBackedStorage(input: {
+  local: SyncStorage | AsyncStorage
+  transport: { get: () => MaybePromise<unknown>; put: (record: PersistServerRecord) => MaybePromise<unknown> }
+  key: string
+  defaults: unknown
+  migrate?: (value: unknown) => unknown
+}): AsyncStorage {
+  const metaKey = serverMetadataKey(input.key)
+
+  async function writeMarker(record: { version: string; updated_at: number }) {
+    await optionalStorage(() =>
+      input.local.setItem(
+        metaKey,
+        JSON.stringify({
+          value: null,
+          version: record.version,
+          updated_at: record.updated_at,
+        }),
+      ),
+    )
+  }
+
+  async function hydrateLocal(key: string, record: PersistServerRecord) {
+    const next = normalize(input.defaults, JSON.stringify(record.value), input.migrate)
+    if (next === undefined) return
+    await optionalStorage(() => input.local.setItem(key, next))
+    await writeMarker(record)
+    return next
+  }
+
+  // Seed the server from local fallback once. Marker is written only after a
+  // confirmed upload, so an unavailable server is retried on the next load.
+  async function migrateUp(local: string, localUpdatedAt: number) {
+    const parsed = parse(local)
+    if (parsed === undefined) return
+    const updatedAt = localUpdatedAt > 0 ? localUpdatedAt : Date.now()
+    const record = { value: parsed, version: UI_STATE_CONTRACT_VERSION, updated_at: updatedAt }
+    const uploaded = await serverAttempt({ run: () => input.transport.put(record) })
+    if (uploaded) await writeMarker(record)
+  }
+
+  return {
+    getItem: async (key) => {
+      const local = await input.local.getItem(key)
+      const localUpdatedAt = local === null ? 0 : serverMetadata(await input.local.getItem(metaKey))
+      const remote = await serverCall({ run: () => input.transport.get() })
+
+      if (isServerRecord(remote) && remote.value !== null && remote.updated_at > localUpdatedAt) {
+        const next = await hydrateLocal(key, remote)
+        if (next !== undefined) return next
+        return local
+      }
+
+      if (isServerRecord(remote) && remote.value !== null && remote.updated_at >= localUpdatedAt) return local
+
+      if (local !== null) await migrateUp(local, localUpdatedAt)
+      return local
+    },
+    setItem: async (key, value) => {
+      await input.local.setItem(key, value)
+      const parsed = parse(value)
+      if (parsed === undefined) return
+
+      const record = { value: parsed, version: UI_STATE_CONTRACT_VERSION, updated_at: Date.now() }
+      await writeMarker(record)
+      const remote = await serverCall({ run: () => input.transport.put(record) })
+      if (isServerRecord(remote) && remote.value !== null && remote.updated_at >= record.updated_at) {
+        await hydrateLocal(key, remote)
+      }
+    },
+    removeItem: async (key) => {
+      await input.local.removeItem(key)
+      await optionalStorage(() => input.local.removeItem(metaKey))
+    },
+  }
+}
+
 const DRAFT_PERSISTED_KEYS = ["prompt", "comments", "file-view", "layout"]
 
 export function draftPersistedKeys() {
@@ -476,7 +647,13 @@ export const PersistTesting = {
   normalize,
   resolveTarget,
   windowStorage,
+  serverMetadataKey,
   workspaceStorage,
+  resetCache() {
+    cache.clear()
+    cacheTotal.bytes = 0
+    fallback.clear()
+  },
 }
 
 export const Persist = {
@@ -490,8 +667,8 @@ export const Persist = {
     return { storage: draftStorage(draftID), key: `draft:${key}`, legacy }
   },
   serverGlobal(scope: ServerScopeValue, key: string, legacy?: string[]): PersistTarget {
-    if (scope === ServerScope.local) return Persist.global(key, legacy)
-    return { storage: GLOBAL_STORAGE, key: ScopedKey.from(scope, key) }
+    if (scope === ServerScope.local) return { storage: GLOBAL_STORAGE, key, legacy, server: { group: key, scope } }
+    return { storage: GLOBAL_STORAGE, key: ScopedKey.from(scope, key), server: { group: key, scope } }
   },
   workspace(dir: string, key: string, legacy?: string[]): PersistTarget {
     return serverWorkspaceTarget(ServerScope.local, dir, `workspace:${key}`, legacy)
@@ -638,23 +815,27 @@ export function persisted<T>(
     return api
   })()
 
-  const [state, setState, init] = makePersisted(store, { name: config.key, storage })
+  const finalStorage = config.server && resolveWebStateServer(config.server.scope)
+    ? serverBackedStorage({
+        local: storage,
+        transport: webStateTransport({ server: config.server }),
+        key: config.key,
+        defaults,
+        migrate: config.migrate,
+      })
+    : storage
+
+  const [state, setState, init] = makePersisted(store, { name: config.key, storage: finalStorage })
 
   const isAsync = init instanceof Promise
-  const [ready] = createResource(
-    () => init,
-    async (initValue) => {
-      if (initValue instanceof Promise) await initValue
-      return true
-    },
-    { initialValue: !isAsync },
-  )
+  const [ready, setReady] = createSignal(!isAsync)
+  if (isAsync) void init.then(() => setReady(true))
 
   return [
     state,
     setState,
     init,
-    Object.assign(() => (ready.loading ? false : ready.latest === true), {
+    Object.assign(() => ready(), {
       promise: init instanceof Promise ? init : undefined,
     }),
   ]

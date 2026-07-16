@@ -102,6 +102,22 @@ describe("ui-state plugin endpoints", () => {
     expect(api.put("not-a-group")).toBeUndefined()
   })
 
+  test("registers all app-declared server-backed UI groups", async () => {
+    const api = setup("/inst", "/ws")
+    for (const group of [
+      "layout.page",
+      "workspace:vcs",
+      "workspace:project",
+      "workspace:icon",
+      "workspace:terminal",
+      "workspace:followup",
+    ]) {
+      const result = await call(api.get(group), getReq(group))
+      expect(result.status, group).toBe(200)
+      expect(result.body, group).toEqual({ value: null, version: "v1", updated_at: 0 })
+    }
+  })
+
   test("returns a default empty record when no record exists", async () => {
     const api = setup("/inst", "/ws")
     const result = await call(api.get("server"), getReq("server"))
