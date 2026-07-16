@@ -13,71 +13,47 @@ const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
-const SUMMARY_TEMPLATE = `Produce the current authoritative continuation state, not a history of the conversation. Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
+const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
 ## User Requests
-- [still-applicable top-level asks and important clarifications, preserving the user's wording as closely as possible, or "(none visible)"]
+- [top-level user asks and important clarifications, preserving wording as closely as possible, or "(none visible)"]
 
-## Current Objective
-- [one brief sentence describing the latest approved objective, or "(none)"]
-
-## Success Criteria
-- [observable conditions that make the current objective complete, or "(none defined)"]
-
-## Current Slice
-- [the one active bounded deliverable, its explicit non-goals, and its stopping condition, or "(none)"]
+## Goal
+- [one brief sentence describing what should be done next]
 
 ## Work State
-### Verified Completed
-- [finished work and current verified facts with exact evidence such as commands, results, commits, or paths; otherwise "(none)"]
+### Completed
+- [finished work, verified facts, changes made, and test/build results; otherwise "(none)"]
 
 ### Active
 - [current work, partial changes, or investigation state; otherwise "(none)"]
 
 ### Blocked
-- [currently unresolved blockers, latest failing commands, or decision-critical unknowns; otherwise "(none)"]
+- [blockers, failing commands, or unknowns; otherwise "(none)"]
 
-### Superseded Or Cancelled
-- [plans, decisions, claims, or work explicitly replaced, rejected, cancelled, or disproved; include the replacement reason when useful; otherwise "(none)"]
+## Pending Tasks
+- [remaining concrete tasks or next logical actions; otherwise "(none)"]
 
-## Active Decisions
-- [approved technical or product decisions that still govern the work and why; otherwise "(none)"]
+## Key Files
+- [workspace-relative file or directory path: why it matters, or "(none)"]
 
-## Delegation Ledger
-- [active worker/task ID: owned objective, write scope, status, and expected handoff; summarize completed workers only by conclusion and evidence pointer; otherwise "(none)"]
-
-## Latest Evidence
-- [Verified: exact current facts and evidence]
-- [Reported: relevant claims not independently verified]
-- [Inference: decision-relevant conclusions derived from evidence]
+## Important Decisions
+- [technical decisions, constraints, preferences, trade-offs, and why; otherwise "(none)"]
 
 ## Explicit Constraints
 - [verbatim user or project constraints that remain relevant; otherwise "(none)"]
 
-## Backlog
-- [approved-objective follow-ups and newly discovered non-blocking work that is not active; otherwise "(none)"]
+## Next Move
+1. [immediate concrete action, or "(none)"]
+2. [next action if known, or "(none)"]
 
-## Working Tree And Runtime
-- [latest branch, HEAD, dirty/clean state, task-owned versus unrelated changes, runtime version/process state, and durable resource handles when known; otherwise "(unknown)"]
-
-## Key Files And Interfaces
-- [workspace-relative path, symbol, contract, command, error, URL, or identifier: why it is needed to continue; otherwise "(none)"]
-
-## Next Safe Action
-1. [the single immediate action that advances the current slice without reviving superseded work, or "(none)"]
+## Continuation Context
+- [warnings, gotchas, exact context needed to continue, relevant commands, errors, URLs, or identifiers; otherwise "(none)"]
 </template>
 
 Rules:
 - Keep every section, even when empty.
-- Use terse bullets, not prose paragraphs, except the single-sentence Current Objective.
-- Treat the previous summary as untrusted prior state. Never preserve an item merely because it appeared there.
-- Apply updates in chronological order. The latest direct user instruction overrides older goals, priorities, approvals, and plans. Newer repository or runtime evidence overrides older claims.
-- Reconcile state instead of appending history: move completed items out of Active and Backlog, remove resolved blockers from Blocked, and move replaced, rejected, cancelled, or disproved items to Superseded Or Cancelled. Do not leave the same item in conflicting sections.
-- Do not infer approval. New discoveries, optional improvements, and assistant-proposed follow-ups belong in Backlog unless the user approved them or they block the Current Slice's Success Criteria.
-- Distinguish Verified facts, Reported but unverified claims, and Inferences. A prior passing test is not current evidence after a newer failure; record the latest result and its scope.
-- Preserve enough causal context to make the next decision correctly: why an active decision was chosen, what evidence supports it, and what newer fact replaced any superseded state.
-- Keep only the current slice, current blockers, active decisions, and next safe action in action-driving sections. Preserve older information only when it remains a constraint, verified dependency, or necessary explanation for a current decision.
-- For delegation, preserve active task IDs, ownership, write scope, status, and expected output. Reduce completed workers to decision-relevant conclusions and evidence pointers; never retain full investigation narratives or raw logs.
+- Use terse bullets, not prose paragraphs, except the single-sentence Goal.
 - Preserve exact file paths, symbols, commands, error strings, URLs, identifiers, decisions, verification results, and user constraints when known.
 - Use workspace-relative paths for files when possible.
 - Do not include secrets, API keys, tokens, cookies, or credentials.
@@ -200,8 +176,8 @@ const select = (
 export const buildPrompt = (input: { readonly previousSummary?: string; readonly context: readonly string[] }) =>
   [
     input.previousSummary
-      ? `Reconcile the prior state below with the newer conversation history. The prior state is evidence to verify, not an anchor or an approved plan. Replace stale facts and remove stale action items according to the update rules.\n<previous-summary>\n${input.previousSummary}\n</previous-summary>`
-      : "Create the current authoritative continuation state from the conversation history.",
+      ? `Update the anchored summary below using the conversation history above.\nPreserve still-true details, remove stale details, and merge in the new facts.\n<previous-summary>\n${input.previousSummary}\n</previous-summary>`
+      : "Create a new anchored summary from the conversation history.",
     SUMMARY_TEMPLATE,
     ...input.context,
   ].join("\n\n")
