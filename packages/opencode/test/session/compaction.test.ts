@@ -1430,7 +1430,8 @@ describe("session.compaction.process", () => {
         expect(captured).toContain("<previous-summary>")
         expect(captured).toContain("summary one")
         expect(captured.match(/summary one/g)?.length).toBe(1)
-        expect(captured).toContain("## Important Details")
+        expect(captured).toContain("## User Requests")
+        expect(captured).toContain("## Important Decisions")
         expect(captured).toContain("## Work State")
       }).pipe(withCompaction({ llm: stub.llmLayer }))
     },
