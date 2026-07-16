@@ -15,7 +15,6 @@ import eventSourcedSessionInputMigration from "@opencode-ai/core/database/migrat
 import contextEpochAgentMigration from "@opencode-ai/core/database/migration/20260605042240_add_context_epoch_agent"
 import simplifyIntegrationCredentialsMigration from "@opencode-ai/core/database/migration/20260611192811_lush_chimera"
 import simplifySessionInputMigration from "@opencode-ai/core/database/migration/20260622202450_simplify_session_input"
-import eventSyncOrderMigration from "@opencode-ai/core/database/migration/20260713234639_event_sync_order"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
@@ -39,29 +38,6 @@ const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
 const makeDb = EffectDrizzleSqlite.makeWithDefaults()
 
 describe("DatabaseMigration", () => {
-  test("backfills stable event sync ordinals without reusing deleted values", async () => {
-    await run(
-      Effect.gen(function* () {
-        const db = yield* makeDb
-        yield* db.run(sql`CREATE TABLE event (id text PRIMARY KEY)`)
-        yield* db.run(sql`INSERT INTO event (id) VALUES ('evt_first'), ('evt_second')`)
-        yield* DatabaseMigration.applyOnly(db, [eventSyncOrderMigration])
-
-        expect(yield* db.all(sql`SELECT ordinal, event_id FROM event_sync_order ORDER BY ordinal`)).toEqual([
-          { ordinal: 1, event_id: "evt_first" },
-          { ordinal: 2, event_id: "evt_second" },
-        ])
-
-        yield* db.run(sql`DELETE FROM event_sync_order WHERE event_id = 'evt_second'`)
-        yield* db.run(sql`INSERT INTO event (id) VALUES ('evt_third')`)
-        yield* db.run(sql`INSERT INTO event_sync_order (event_id) VALUES ('evt_third')`)
-        expect(yield* db.get(sql`SELECT ordinal FROM event_sync_order WHERE event_id = 'evt_third'`)).toEqual({
-          ordinal: 3,
-        })
-      }),
-    )
-  })
-
   test("serializes concurrent embedded initialization for one database path", async () => {
     await using tmp = await tmpdir()
     const filename = path.join(tmp.path, "embedded.sqlite")

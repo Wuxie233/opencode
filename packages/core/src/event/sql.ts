@@ -23,15 +23,3 @@ export const EventTable = sqliteTable(
     index("event_aggregate_type_seq_idx").on(table.aggregate_id, table.type, table.seq),
   ],
 )
-
-export const EventSyncOrderTable = sqliteTable(
-  "event_sync_order",
-  {
-    ordinal: integer().primaryKey({ autoIncrement: true }),
-    event_id: text()
-      .$type<EventV2.ID>()
-      .notNull()
-      .references(() => EventTable.id, { onDelete: "cascade" }),
-  },
-  (table) => [uniqueIndex("event_sync_order_event_id_idx").on(table.event_id)],
-)

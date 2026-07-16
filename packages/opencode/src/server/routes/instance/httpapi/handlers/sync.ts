@@ -5,29 +5,16 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2 } from "@opencode-ai/core/event"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventTable } from "@opencode-ai/core/event/sql"
-import { EventSyncOrderTable } from "@opencode-ai/core/event/sql"
 import { asc } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { eq } from "drizzle-orm"
 import { lte } from "drizzle-orm"
 import { not } from "drizzle-orm"
 import { or } from "drizzle-orm"
-import { gt } from "drizzle-orm"
-import { max } from "drizzle-orm"
-import { createHash } from "node:crypto"
 import { Effect, Scope } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { ReplayPayload, SessionPayload } from "../groups/sync"
-import { HistoryPagePayload, HistoryPayload } from "@/sync/schema"
-
-const HISTORY_PAGE_LIMIT = 500
-
-function historyState(known: Record<string, number>) {
-  return createHash("sha256")
-    .update(JSON.stringify(Object.entries(known).sort(([left], [right]) => left.localeCompare(right))))
-    .digest("base64url")
-}
+import { HistoryPayload, ReplayPayload, SessionPayload } from "../groups/sync"
 
 export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handlers) =>
   Effect.gen(function* () {
@@ -103,69 +90,6 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
       return rows
     })
 
-    const historyV2 = Effect.fn("SyncHttpApi.historyV2")(function* (ctx: {
-      payload: typeof HistoryPagePayload.Type
-    }) {
-      const continuation =
-        ctx.payload.cursor !== undefined || ctx.payload.watermark !== undefined || ctx.payload.state !== undefined
-      if (
-        continuation &&
-        (ctx.payload.cursor === undefined || ctx.payload.watermark === undefined || ctx.payload.state === undefined)
-      ) {
-        return yield* new HttpApiError.BadRequest({})
-      }
-      if (!continuation && ctx.payload.state !== undefined) return yield* new HttpApiError.BadRequest({})
-
-      const state = historyState(ctx.payload.known)
-      if (ctx.payload.state !== undefined && ctx.payload.state !== state) {
-        return yield* new HttpApiError.BadRequest({})
-      }
-      const cursor = ctx.payload.cursor ?? 0
-      const watermark =
-        ctx.payload.watermark ??
-        ((yield* db
-          .select({ ordinal: max(EventSyncOrderTable.ordinal) })
-          .from(EventSyncOrderTable)
-          .get()
-          .pipe(Effect.orDie))?.ordinal ?? 0)
-      if (cursor > watermark) return yield* new HttpApiError.BadRequest({})
-
-      const limit = ctx.payload.limit ?? HISTORY_PAGE_LIMIT
-      const rows = yield* db
-        .select({
-          ordinal: EventSyncOrderTable.ordinal,
-          id: EventTable.id,
-          aggregate_id: EventTable.aggregate_id,
-          seq: EventTable.seq,
-          type: EventTable.type,
-          data: EventTable.data,
-        })
-        .from(EventSyncOrderTable)
-        .innerJoin(EventTable, eq(EventSyncOrderTable.event_id, EventTable.id))
-        .where(and(gt(EventSyncOrderTable.ordinal, cursor), lte(EventSyncOrderTable.ordinal, watermark)))
-        .orderBy(asc(EventSyncOrderTable.ordinal))
-        .limit(limit + 1)
-        .all()
-        .pipe(Effect.orDie)
-      const candidates = rows.slice(0, limit)
-      const hasMore = rows.length > limit
-      const nextCursor = hasMore ? (candidates.at(-1)?.ordinal ?? cursor) : watermark
-      const events = candidates
-        .filter((event) => event.seq > (ctx.payload.known[event.aggregate_id] ?? -1))
-        .map(({ ordinal: _, ...event }) => event)
-      yield* Effect.annotateCurrentSpan({
-        "sync.history.v2.scanned": candidates.length,
-        "sync.history.v2.events": events.length,
-        "sync.history.v2.has_more": hasMore,
-      })
-      return { events, cursor: nextCursor, watermark, state, hasMore }
-    })
-
-    return handlers
-      .handle("start", start)
-      .handle("replay", replay)
-      .handle("steal", steal)
-      .handle("history", history)
-      .handle("historyV2", historyV2)
+    return handlers.handle("start", start).handle("replay", replay).handle("steal", steal).handle("history", history)
   }),
 )

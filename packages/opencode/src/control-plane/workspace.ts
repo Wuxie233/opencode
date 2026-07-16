@@ -2,13 +2,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Context, Effect, FiberMap, Iterable, Layer, Schema, Stream } from "effect"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
-import {
-  HttpBody,
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http"
+import { FetchHttpClient, HttpBody, HttpClient, HttpClientError, HttpClientRequest } from "effect/unstable/http"
 import { Database } from "@opencode-ai/core/database/database"
 import { asc } from "drizzle-orm"
 import { eq } from "drizzle-orm"
@@ -40,7 +34,6 @@ import { InstanceStore } from "@/project/instance-store"
 import { WorkspaceAdapterRuntime } from "./workspace-adapter-runtime"
 import { AppNodeBuilderV1 } from "@/effect/app-node-builder-v1"
 import { WorkspaceEvent } from "@opencode-ai/schema/workspace-event"
-import { HistoryEvent, HistoryPageResponse } from "@/sync/schema"
 
 export const Info = Schema.Struct({
   ...WorkspaceInfoSchema.fields,
@@ -130,7 +123,6 @@ type SessionWarpError =
   | WorkspaceNotFoundError
   | SessionEventsNotFoundError
   | SessionWarpHttpError
-  | SyncHttpError
   | Vcs.PatchApplyError
   | HttpClientError.HttpClientError
 type WaitForSyncError = SyncTimeoutError | SyncAbortedError
@@ -334,137 +326,41 @@ const layer = Layer.effect(
           )
         : {}
 
-      const replay = (history: ReadonlyArray<typeof HistoryEvent.Type>) =>
-        Effect.forEach(
-          history,
-          (event) =>
-            events
-              .replay(
-                {
-                  id: event.id,
-                  aggregateID: event.aggregate_id,
-                  seq: event.seq,
-                  type: event.type,
-                  data: event.data,
-                },
-                { publish: true, ownerID: space.id },
-              )
-              .pipe(Effect.provideService(WorkspaceRef, space.id)),
-          { discard: true },
-        )
-
-      const legacy = Effect.fn("Workspace.syncHistoryLegacy")(function* () {
-        const response = yield* http.execute(
-          HttpClientRequest.post(route(url, "/sync/history"), {
-            headers: new Headers(headers),
-            body: HttpBody.jsonUnsafe(state),
-          }),
-        )
-        if (response.status < 200 || response.status >= 300) {
-          const body = yield* response.text
-          return yield* new SyncHttpError({
-            message: `Workspace history HTTP failure: ${response.status} ${body}`,
-            status: response.status,
-            body,
-          })
-        }
-
-        const history = yield* response.json.pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HistoryEvent))),
-          Effect.mapError(
-            (error) =>
-              new SyncHttpError({
-                message: `Workspace history response decode failure: ${String(error)}`,
-                status: response.status,
-              }),
-          ),
-        )
-        yield* replay(history)
-      })
-
-      const decodePage = (response: HttpClientResponse.HttpClientResponse) =>
-        response.json.pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(HistoryPageResponse)),
-          Effect.mapError(
-            (error) =>
-              new SyncHttpError({
-                message: `Workspace history response decode failure: ${String(error)}`,
-                status: response.status,
-              }),
-          ),
-        )
-
-      const first = yield* http.execute(
-        HttpClientRequest.post(route(url, "/sync/v2/history"), {
+      const response = yield* http.execute(
+        HttpClientRequest.post(route(url, "/sync/history"), {
           headers: new Headers(headers),
-          body: HttpBody.jsonUnsafe({ known: state }),
+          body: HttpBody.jsonUnsafe(state),
         }),
       )
 
-      if (first.status === 404 || first.status === 405) {
-        yield* legacy()
-        return
-      }
-      if (first.status < 200 || first.status >= 300) {
-        const body = yield* first.text
+      if (response.status < 200 || response.status >= 300) {
+        const body = yield* response.text
         return yield* new SyncHttpError({
-          message: `Workspace history HTTP failure: ${first.status} ${body}`,
-          status: first.status,
+          message: `Workspace history HTTP failure: ${response.status} ${body}`,
+          status: response.status,
           body,
         })
       }
 
-      const initial = yield* decodePage(first)
-      if (
-        initial.cursor > initial.watermark ||
-        (initial.hasMore && initial.cursor === 0) ||
-        (!initial.hasMore && initial.cursor !== initial.watermark)
-      ) {
-        return yield* new SyncHttpError({
-          message: "Workspace history response has invalid pagination state",
-          status: first.status,
-        })
-      }
-      yield* replay(initial.events)
+      const history = (yield* response.json) as HistoryEvent[]
 
-      let page = initial
-      while (page.hasMore) {
-        const response = yield* http.execute(
-          HttpClientRequest.post(route(url, "/sync/v2/history"), {
-            headers: new Headers(headers),
-            body: HttpBody.jsonUnsafe({
-              known: state,
-              cursor: String(page.cursor),
-              watermark: String(page.watermark),
-              state: page.state,
-            }),
-          }),
-        )
-        if (response.status < 200 || response.status >= 300) {
-          const body = yield* response.text
-          return yield* new SyncHttpError({
-            message: `Workspace history HTTP failure: ${response.status} ${body}`,
-            status: response.status,
-            body,
-          })
-        }
-
-        const next = yield* decodePage(response)
-        if (
-          next.cursor <= page.cursor ||
-          next.cursor > page.watermark ||
-          next.watermark !== page.watermark ||
-          next.state !== page.state ||
-          (!next.hasMore && next.cursor !== next.watermark)
-        ) {
-          return yield* new SyncHttpError({
-            message: "Workspace history response has invalid pagination state",
-            status: response.status,
-          })
-        }
-        yield* replay(next.events)
-        page = next
-      }
+      yield* Effect.forEach(
+        history,
+        (event) =>
+          events
+            .replay(
+              {
+                id: EventV2.ID.make(event.id),
+                aggregateID: event.aggregate_id,
+                seq: event.seq,
+                type: event.type,
+                data: event.data,
+              },
+              { publish: true, ownerID: space.id },
+            )
+            .pipe(Effect.provideService(WorkspaceRef, space.id)),
+        { discard: true },
+      )
     })
 
     const syncWorkspaceLoop = Effect.fn("Workspace.syncWorkspaceLoop")(function* (space: Info) {
@@ -675,7 +571,15 @@ const layer = Layer.effect(
             const target = yield* WorkspaceAdapterRuntime.target(previous)
 
             if (target.type === "remote") {
-              yield* syncHistory(previous, target.url, target.headers)
+              yield* syncHistory(previous, target.url, target.headers).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning("session warp final source sync failed", {
+                    workspaceID: previous.id,
+                    sessionID: input.sessionID,
+                    error: errorData(error),
+                  }),
+                ),
+              )
             } else {
               yield* prompt.cancel(input.sessionID)
             }
@@ -982,6 +886,14 @@ const layer = Layer.effect(
 )
 
 const TIMEOUT = 5000
+
+type HistoryEvent = {
+  id: string
+  aggregate_id: string
+  seq: number
+  type: string
+  data: Record<string, unknown>
+}
 
 function waitUntilSynced(input: {
   db: Database.Interface["db"]

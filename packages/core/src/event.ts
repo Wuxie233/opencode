@@ -5,7 +5,7 @@ import { Event } from "@opencode-ai/schema/event"
 import type { Data, Definition, Payload } from "@opencode-ai/schema/event"
 import { and, asc, eq, gt, inArray } from "drizzle-orm"
 import { Database } from "./database/database"
-import { EventSequenceTable, EventSyncOrderTable, EventTable } from "./event/sql"
+import { EventSequenceTable, EventTable } from "./event/sql"
 import { Location } from "./location"
 import { makeGlobalNode } from "./effect/app-node"
 import { isDeepStrictEqual } from "node:util"
@@ -344,11 +344,6 @@ export const layerWith = (options?: LayerOptions) =>
                                 data: encoded,
                               },
                             ])
-                            .run()
-                            .pipe(Effect.orDie)
-                          yield* db
-                            .insert(EventSyncOrderTable)
-                            .values({ event_id: event.id })
                             .run()
                             .pipe(Effect.orDie)
                           return { aggregateID, seq }
