@@ -80,26 +80,6 @@ describe("markdown stream", () => {
     ])
   })
 
-  test("splits large completed markdown into bounded semantic blocks", () => {
-    const unit = `Paragraph with [docs](https://example.com) and \`inline code\`.
-
-\`\`\`ts
-const wave = "ten"
-\`\`\`
-
-`
-    const text = unit.repeat(Math.ceil((128 * 1024) / unit.length))
-
-    const blocks = project(undefined, text, false).blocks
-
-    expect(blocks.length).toBeGreaterThan(1)
-    expect(blocks.map((block) => block.raw).join("")).toBe(text)
-    expect(blocks.some((block) => block.mode === "code" && block.complete)).toBe(true)
-    expect(
-      Math.max(...blocks.filter((block) => block.mode !== "code").map((block) => block.raw.length)),
-    ).toBeLessThanOrEqual(64 * 1024)
-  })
-
   test("keeps compact and indented reference definitions with their uses", () => {
     expect(stream("[docs]\n\n   [docs]:/guide", true)).toEqual([
       {

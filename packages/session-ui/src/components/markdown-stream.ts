@@ -14,13 +14,6 @@ export type Projection = {
   blocks: Block[]
 }
 
-const completeBlockSize = 64 * 1024
-const lexerWindowSize = 1024
-
-export function requiresCompletedProjection(text: string) {
-  return text.length > completeBlockSize
-}
-
 function refs(text: string) {
   if (!text.includes("]:")) return false
   return /^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:\S+|\r?\n[ \t]+\S+)/m.test(text)
@@ -56,116 +49,8 @@ function heal(text: string) {
   return remend(text, { linkMode: "text-only" })
 }
 
-type CompleteToken = {
-  token: Tokens.Generic
-  raw: string
-}
-
-function originalEnd(text: string, start: number, length: number) {
-  let cursor = start
-  let consumed = 0
-  while (cursor < text.length && consumed < length) {
-    if (text[cursor] === "\r" && text[cursor + 1] === "\n") cursor++
-    cursor++
-    consumed++
-  }
-  return cursor
-}
-
-function* completeTokens(text: string) {
-  let cursor = 0
-  while (cursor < text.length) {
-    let size = lexerWindowSize
-    let end = Math.min(text.length, cursor + size)
-    let tokens = marked.lexer(text.slice(cursor, end))
-    let count = end === text.length ? tokens.length : tokens.findLastIndex((token) => token.type !== "space")
-    while (count <= 0 && end < text.length) {
-      size *= 2
-      end = Math.min(text.length, cursor + size)
-      tokens = marked.lexer(text.slice(cursor, end))
-      count = end === text.length ? tokens.length : tokens.findLastIndex((token) => token.type !== "space")
-    }
-
-    for (const token of tokens.slice(0, count)) {
-      const next = originalEnd(text, cursor, token.raw.length)
-      yield { token, raw: text.slice(cursor, next) } satisfies CompleteToken
-      cursor = next
-    }
-  }
-}
-
-type CompleteBlockState = {
-  blocks: Block[]
-  prefix: string
-  prose: string
-}
-
-function pushProse(state: CompleteBlockState) {
-  if (!state.prose) return
-  state.blocks.push({ raw: state.prose, src: state.prefix + state.prose, mode: "full" })
-  state.prose = ""
-}
-
-function appendCompleteToken(state: CompleteBlockState, item: CompleteToken) {
-  if (item.token.type === "code") {
-    pushProse(state)
-    const code = item.token as Tokens.Code
-    state.blocks.push({ raw: item.raw, src: code.text, mode: "code", language: language(code.lang), complete: true })
-    return
-  }
-  if (state.prose && state.prose.length + item.raw.length > completeBlockSize) pushProse(state)
-  state.prose += item.raw
-}
-
-function completeBlocks(tokens: CompleteToken[]): Block[] {
-  const definitions = tokens
-    .filter((item) => item.token.type === "def")
-    .map((item) => item.raw)
-    .join("")
-  const state = { blocks: [], prefix: definitions ? `${definitions}\n\n` : "", prose: "" } satisfies CompleteBlockState
-  tokens.forEach((token) => appendCompleteToken(state, token))
-  pushProse(state)
-  return state.blocks
-}
-
-function complete(text: string): Block[] {
-  if (!requiresCompletedProjection(text)) return [{ raw: text, src: text, mode: "full" }]
-  return completeBlocks(Array.from(completeTokens(text)))
-}
-
-export async function projectCompleted(
-  text: string,
-  active: () => boolean,
-  publish?: (projection: Projection) => void,
-) {
-  if (!requiresCompletedProjection(text))
-    return { text, blocks: [{ raw: text, src: text, mode: "full" }] } satisfies Projection
-  const referenced = text.includes("]:")
-  const tokens: CompleteToken[] = []
-  const state = { blocks: [], prefix: "", prose: "" } satisfies CompleteBlockState
-  let published = false
-  let count = 0
-  for (const token of completeTokens(text)) {
-    if (!active()) return
-    if (referenced) tokens.push(token)
-    else appendCompleteToken(state, token)
-    count++
-    if (count % 128 !== 0) continue
-    if (!referenced && !published && state.blocks.length > 0) {
-      published = true
-      publish?.({ text, blocks: state.blocks.slice() })
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
-  }
-  if (!active()) return
-  const blocks = referenced ? completeBlocks(tokens) : (pushProse(state), state.blocks)
-  const result = { text, blocks } satisfies Projection
-  publish?.(result)
-  return result
-}
-
 export function stream(text: string, live: boolean): Block[] {
-  if (!live) return complete(text)
+  if (!live) return [{ raw: text, src: text, mode: "full" }] satisfies Block[]
   if (refs(text)) return [{ raw: text, src: heal(text), mode: "live" }] satisfies Block[]
   const tokens = marked.lexer(text)
   const tail = tokens.findLastIndex((token) => token.type !== "space")
@@ -178,11 +63,7 @@ export function stream(text: string, live: boolean): Block[] {
     const token = tokens[index]
     if (!token || token.type === "space") continue
     let raw = token.raw
-    while (tokens[index + 1]?.type === "space" && index + 1 < tail) {
-      index++
-      const space = tokens[index]
-      if (space) raw += space.raw
-    }
+    while (tokens[index + 1]?.type === "space" && index + 1 < tail) raw += tokens[++index]!.raw
     if (token.type === "code") {
       const code = token as Tokens.Code
       result.push({ raw, src: code.text, mode: "code", language: language(code.lang), complete: true })
