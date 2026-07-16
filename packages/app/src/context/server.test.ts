@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
+import { Persist } from "@/utils/persist"
 import {
   createServerProjects,
+  migrateServerProjectsState,
   migrateCanonicalLocalServerState,
   nextServerAfterRemoval,
   resolveServerList,
@@ -195,6 +197,36 @@ describe("createServerProjects", () => {
       projects.close("/repo/")
       expect(projects.recentlyClosed()).toEqual(["/repo/"])
       dispose()
+    })
+  })
+  test("stores projects in server-backed server.projects while server list remains local", () => {
+    expect(Persist.global("server", ["server.v3"])).toEqual({
+      storage: "opencode.global.dat",
+      key: "server",
+      legacy: ["server.v3"],
+    })
+    expect(Persist.serverGlobal(ServerScope.local, "server.projects", ["server.v3"])).toEqual({
+      storage: "opencode.global.dat",
+      key: "server.projects",
+      legacy: ["server.v3"],
+      server: { group: "server.projects", scope: ServerScope.local },
+    })
+  })
+
+  test("migrates projects and lastProject from the legacy server.v3 blob", () => {
+    expect(
+      migrateServerProjectsState(
+        {
+          list: ["http://localhost:4096"],
+          projects: { "https://opencode.example.com": [{ worktree: "/remote", expanded: true }] },
+          lastProject: { "https://opencode.example.com": "/remote" },
+        },
+        ServerConnection.Key.make("https://opencode.example.com"),
+      ),
+    ).toEqual({
+      projects: { local: [{ worktree: "/remote", expanded: true }] },
+      lastProject: { local: "/remote" },
+      recentlyClosed: {},
     })
   })
 })

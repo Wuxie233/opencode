@@ -59,7 +59,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     const fallback = server.key
     const [store, setStore, _, ready] = persisted(
       {
-        ...Persist.window("tabs"),
+        ...Persist.serverGlobal(server.scope(), "tabs"),
         migrate: (value: unknown) => migrateTabs(value, fallback),
       },
       createStore<Tab[]>([]),
