@@ -1,12 +1,15 @@
 import { afterEach, describe, expect, mock } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer } from "effect"
+import { Deferred, Duration, Effect, Fiber, Layer } from "effect"
 import { Session as SessionNs } from "@/session/session"
+import { SessionRetryControl } from "@/session/retry-control"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
-const it = testEffect(Layer.mergeAll(LayerNode.compile(SessionNs.node), httpApiLayer))
+const it = testEffect(
+  Layer.mergeAll(LayerNode.compile(LayerNode.group([SessionNs.node, SessionRetryControl.node])), httpApiLayer),
+)
 
 afterEach(async () => {
   mock.restore()
@@ -85,6 +88,54 @@ describe("session action routes", () => {
 
         expect(res.status).toBe(200)
         expect(yield* res.json).toBe(true)
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "retry route returns false when no retry wait is active",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const session = yield* Effect.acquireRelease(SessionNs.use.create({}), (created) =>
+          SessionNs.use.remove(created.id).pipe(Effect.ignore),
+        )
+
+        const res = yield* requestInDirectory(`/session/${session.id}/retry`, test.directory, { method: "POST" })
+
+        expect(res.status).toBe(200)
+        expect(yield* res.json).toBe(false)
+      }),
+    { git: true },
+  )
+
+  it.instance(
+    "retry route wakes the active retry wait exactly once",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const retry = yield* SessionRetryControl.Service
+        const session = yield* Effect.acquireRelease(SessionNs.use.create({}), (created) =>
+          SessionNs.use.remove(created.id).pipe(Effect.ignore),
+        )
+        const ready = yield* Deferred.make<void>()
+        const waiting = yield* retry
+          .wait({
+            sessionID: session.id,
+            duration: Duration.hours(1),
+            ready: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+          })
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(ready)
+
+        const first = yield* requestInDirectory(`/session/${session.id}/retry`, test.directory, { method: "POST" })
+        yield* Fiber.await(waiting).pipe(Effect.timeout("250 millis"))
+        const second = yield* requestInDirectory(`/session/${session.id}/retry`, test.directory, { method: "POST" })
+
+        expect(first.status).toBe(200)
+        expect(yield* first.json).toBe(true)
+        expect(second.status).toBe(200)
+        expect(yield* second.json).toBe(false)
       }),
     { git: true },
   )

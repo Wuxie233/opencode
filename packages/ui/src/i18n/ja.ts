@@ -67,6 +67,8 @@ export const dict = {
   "ui.sessionTurn.retry.attempt": "{{attempt}}回目",
   "ui.sessionTurn.retry.attemptLine": "{{line}} - {{attempt}}回目",
   "ui.sessionTurn.retry.geminiHot": "gemini が混雑しています",
+  "ui.sessionTurn.retry.action": "今すぐ再試行",
+  "ui.sessionTurn.retry.pending": "再試行中...",
   "ui.sessionTurn.error.freeUsageExceeded": "無料使用制限に達しました",
   "ui.sessionTurn.error.addCredits": "クレジットを追加",
 

@@ -44,6 +44,8 @@ export const dict = {
   "ui.sessionTurn.retry.attempt": "{{attempt}}번째 시도",
   "ui.sessionTurn.retry.attemptLine": "{{line}} - {{attempt}}번째 시도",
   "ui.sessionTurn.retry.geminiHot": "Gemini가 현재 과부하 상태입니다",
+  "ui.sessionTurn.retry.action": "지금 다시 시도",
+  "ui.sessionTurn.retry.pending": "다시 시도 중...",
   "ui.sessionTurn.error.freeUsageExceeded": "무료 사용량 초과",
   "ui.sessionTurn.error.addCredits": "크레딧 추가",
 

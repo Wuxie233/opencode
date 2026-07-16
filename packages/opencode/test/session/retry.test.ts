@@ -4,9 +4,10 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Schedule, Schema } from "effect"
+import { Deferred, Duration, Effect, Fiber, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
+import { SessionRetryControl } from "../../src/session/retry-control"
 import { MessageV2 } from "../../src/session/message-v2"
 import { ProviderError } from "../../src/provider/error"
 import { SessionID } from "../../src/session/schema"
@@ -16,7 +17,9 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 
 const providerID = ProviderV2.ID.make("test")
 const retryProvider = "test"
-const it = testEffect(LayerNode.compile(LayerNode.group([SessionStatus.node, CrossSpawnSpawner.node])))
+const it = testEffect(
+  LayerNode.compile(LayerNode.group([SessionRetryControl.node, SessionStatus.node, CrossSpawnSpawner.node])),
+)
 
 function apiError(headers?: Record<string, string>): SessionV1.APIError {
   return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
@@ -37,6 +40,12 @@ describe("session.retry.delay", () => {
     const error = apiError()
     const delays = Array.from({ length: 10 }, (_, index) => SessionRetry.delay(index + 1, error))
     expect(delays).toStrictEqual([2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000, 30000, 30000])
+  })
+
+  test("caps fallback delay at 30 seconds when response headers have no retry hint", () => {
+    const errors = [apiError({}), apiError({ "content-type": "application/json" }), apiError({ "retry-after": "invalid" })]
+
+    expect(errors.map((error) => SessionRetry.delay(10, error))).toStrictEqual([30000, 30000, 30000])
   })
 
   test("prefers retry-after-ms when shorter than exponential", () => {
@@ -91,11 +100,17 @@ describe("session.retry.delay", () => {
       const sessionID = SessionID.make("session-retry-test")
       const error = apiError({ "retry-after-ms": "0" })
       const status = yield* SessionStatus.Service
+      const retry = yield* SessionRetryControl.Service
 
       const step = yield* Schedule.toStepWithMetadata(
         SessionRetry.policy({
           provider: "test",
           parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          wait: (input) =>
+            retry.wait({
+              sessionID,
+              ...input,
+            }),
           set: (info) =>
             status.set(sessionID, {
               type: "retry",
@@ -113,6 +128,71 @@ describe("session.retry.delay", () => {
         attempt: 2,
         message: "boom",
       })
+    }),
+  )
+})
+
+describe("session.retry.control", () => {
+  it.instance("wakes an active retry wait exactly once", () =>
+    Effect.gen(function* () {
+      const retry = yield* SessionRetryControl.Service
+      const sessionID = SessionID.make("session-retry-wake")
+      const ready = yield* Deferred.make<void>()
+      const waiting = yield* retry
+        .wait({
+          sessionID,
+          duration: Duration.hours(1),
+          ready: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+        })
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(ready)
+
+      expect(yield* retry.wake(sessionID)).toBe(true)
+      yield* Fiber.await(waiting).pipe(Effect.timeout("250 millis"))
+      expect(yield* retry.wake(sessionID)).toBe(false)
+    }),
+  )
+
+  it.instance("does not prearm a future retry wait", () =>
+    Effect.gen(function* () {
+      const retry = yield* SessionRetryControl.Service
+      const sessionID = SessionID.make("session-retry-future")
+
+      expect(yield* retry.wake(sessionID)).toBe(false)
+
+      const ready = yield* Deferred.make<void>()
+      const waiting = yield* retry
+        .wait({
+          sessionID,
+          duration: Duration.hours(1),
+          ready: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+        })
+        .pipe(Effect.forkChild)
+      yield* Deferred.await(ready)
+
+      expect(yield* retry.wake(sessionID)).toBe(true)
+      yield* Fiber.await(waiting).pipe(Effect.timeout("250 millis"))
+    }),
+  )
+
+  it.instance("clears the retry gate when the wait is interrupted", () =>
+    Effect.gen(function* () {
+      const retry = yield* SessionRetryControl.Service
+      const sessionID = SessionID.make("session-retry-interrupt")
+      const ready = yield* Deferred.make<void>()
+      const waiting = yield* retry
+        .wait({
+          sessionID,
+          duration: Duration.hours(1),
+          ready: Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+        })
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(ready)
+      yield* Fiber.interrupt(waiting)
+
+      expect(yield* retry.wake(sessionID)).toBe(false)
     }),
   )
 })

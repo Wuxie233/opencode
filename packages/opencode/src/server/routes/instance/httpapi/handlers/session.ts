@@ -9,6 +9,7 @@ import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
+import { SessionRetryControl } from "@/session/retry-control"
 import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
@@ -50,6 +51,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const session = yield* Session.Service
     const shareSvc = yield* SessionShare.Service
     const promptSvc = yield* SessionPrompt.Service
+    const retrySvc = yield* SessionRetryControl.Service
     const revertSvc = yield* SessionRevert.Service
     const compactSvc = yield* SessionCompaction.Service
     const runState = yield* SessionRunState.Service
@@ -232,6 +234,10 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const abort = Effect.fn("SessionHttpApi.abort")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* promptSvc.cancel(ctx.params.sessionID)
       return true
+    })
+
+    const retry = Effect.fn("SessionHttpApi.retry")(function* (ctx: { params: { sessionID: SessionID } }) {
+      return yield* retrySvc.wake(ctx.params.sessionID)
     })
 
     const init = Effect.fn("SessionHttpApi.init")(function* (ctx: {
@@ -424,6 +430,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("update", update)
       .handleRaw("fork", forkRaw)
       .handle("abort", abort)
+      .handle("retry", retry)
       .handle("init", init)
       .handle("share", share)
       .handle("unshare", unshare)

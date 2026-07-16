@@ -9986,6 +9986,36 @@ export type SessionAbortResponses = {
 
 export type SessionAbortResponse = SessionAbortResponses[keyof SessionAbortResponses]
 
+export type SessionRetryData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/retry"
+}
+
+export type SessionRetryErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type SessionRetryError = SessionRetryErrors[keyof SessionRetryErrors]
+
+export type SessionRetryResponses = {
+  /**
+   * Retry wait woken
+   */
+  200: boolean
+}
+
+export type SessionRetryResponse = SessionRetryResponses[keyof SessionRetryResponses]
+
 export type SessionInitData = {
   body?: {
     modelID: string

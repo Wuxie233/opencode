@@ -16,6 +16,7 @@ import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
+import { SessionRetryControl } from "./retry-control"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
@@ -91,6 +92,7 @@ const layer = Layer.effect(
     const summary = yield* SessionSummary.Service
     const scope = yield* Scope.Scope
     const status = yield* SessionStatus.Service
+    const retry = yield* SessionRetryControl.Service
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
     const database = yield* Database.Service
@@ -113,6 +115,7 @@ const layer = Layer.effect(
         reasoningMap: {},
       }
       let aborted = false
+      let attemptVisible = false
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
@@ -536,6 +539,10 @@ const layer = Layer.effect(
         }
       })
 
+      function visibleEvent(value: StreamEvent) {
+        return !["finish", "provider-error"].includes(value.type)
+      }
+
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
         if (ctx.snapshot) {
           const patch = yield* snapshot.patch(ctx.snapshot)
@@ -636,23 +643,20 @@ const layer = Layer.effect(
           yield* Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
+            attemptVisible = false
             yield* status.set(ctx.sessionID, { type: "busy" })
             const stream = llm.stream(streamInput)
 
             yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
+              Stream.tap((event) =>
+                handleEvent(event).pipe(
+                  Effect.tap(() => Effect.sync(() => (attemptVisible ||= visibleEvent(event)))),
+                ),
+              ),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
           }).pipe(
-            Effect.onInterrupt(() =>
-              Effect.gen(function* () {
-                aborted = true
-                if (!ctx.assistantMessage.error) {
-                  yield* halt(new DOMException("Aborted", "AbortError"))
-                }
-              }),
-            ),
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
@@ -661,6 +665,8 @@ const layer = Layer.effect(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
+                allow: () => !attemptVisible,
+                wait: (info) => retry.wait({ sessionID: ctx.sessionID, ...info }),
                 set: (info) => {
                   return status.set(ctx.sessionID, {
                     type: "retry",
@@ -670,6 +676,14 @@ const layer = Layer.effect(
                     next: info.next,
                   })
                 },
+              }),
+            ),
+            Effect.onInterrupt(() =>
+              Effect.gen(function* () {
+                aborted = true
+                if (!ctx.assistantMessage.error) {
+                  yield* halt(new DOMException("Aborted", "AbortError"))
+                }
               }),
             ),
             Effect.catch(halt),
@@ -709,6 +723,7 @@ export const node = LayerNode.make({
     Plugin.node,
     SessionSummary.node,
     SessionStatus.node,
+    SessionRetryControl.node,
     Image.node,
     EventV2Bridge.node,
     Database.node,
