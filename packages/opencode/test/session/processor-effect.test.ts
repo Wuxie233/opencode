@@ -9,6 +9,7 @@ import path from "path"
 import z from "zod"
 import type { Agent } from "../../src/agent/agent"
 import { Provider } from "@/provider/provider"
+import { ProviderError } from "@/provider/error"
 
 import { Session } from "@/session/session"
 import { LLM } from "../../src/session/llm"
@@ -16,6 +17,8 @@ import { MessageV2 } from "../../src/session/message-v2"
 import { SessionProcessor } from "../../src/session/processor"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionStatus } from "../../src/session/status"
+import { SessionRetry } from "../../src/session/retry"
+import { SessionRetryControl } from "../../src/session/retry-control"
 import { SessionSummary } from "../../src/session/summary"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { provideTmpdirInstance, provideTmpdirServer } from "../fixture/fixture"
@@ -173,6 +176,7 @@ const root = LayerNode.group([
   Database.node,
   EventV2Bridge.node,
   SessionStatus.node,
+  SessionRetryControl.node,
   CrossSpawnSpawner.node,
 ])
 const replacements = [
@@ -226,12 +230,88 @@ const fragmentFailureLLM = Layer.succeed(
 const fragmentFailureEnv = LayerNode.compile(root, [...replacements, [LLM.node, fragmentFailureLLM]])
 const itFragmentFailure = testEffect(fragmentFailureEnv)
 
+function retryGateEnv(first: Stream.Stream<LLMEvent, unknown>) {
+  let calls = 0
+  const llm = Layer.succeed(
+    LLM.Service,
+    LLM.Service.of({
+      stream: () => {
+        calls += 1
+        return calls === 1
+          ? first
+          : Stream.make(
+              LLMEvent.stepStart({ index: 0 }),
+              LLMEvent.textStart({ id: "text-success" }),
+              LLMEvent.textDelta({ id: "text-success", text: "recovered" }),
+              LLMEvent.textEnd({ id: "text-success" }),
+              LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+              LLMEvent.finish({ reason: "stop" }),
+            )
+      },
+    }),
+  )
+  return { calls: () => calls, it: testEffect(LayerNode.compile(root, [...replacements, [LLM.node, llm]])) }
+}
+
+const errorOnlyRetry = retryGateEnv(Stream.fail(new ProviderError.ResponseStreamError("HTTP 200 stream error")))
+const partialTextNoRetry = retryGateEnv(
+  Stream.concat(
+    Stream.make(
+      LLMEvent.textStart({ id: "text-partial" }),
+      LLMEvent.textDelta({ id: "text-partial", text: "partial" }),
+    ),
+    Stream.fail(new ProviderError.ResponseStreamError("HTTP 200 stream error after text")),
+  ),
+)
+const toolNoRetry = retryGateEnv(
+  Stream.concat(
+    Stream.make(
+      LLMEvent.toolInputStart({ id: "call-safe", name: "lookup" }),
+      LLMEvent.toolInputEnd({ id: "call-safe", name: "lookup" }),
+      LLMEvent.toolCall({ id: "call-safe", name: "lookup", input: {}, providerExecuted: true }),
+    ),
+    Stream.fail(new ProviderError.ResponseStreamError("HTTP 200 stream error after tool")),
+  ),
+)
+
 const boot = Effect.fn("test.boot")(function* () {
   const processors = yield* SessionProcessor.Service
   const session = yield* Session.Service
   const provider = yield* Provider.Service
   return { processors, session, provider }
 })
+
+function processOnce(text: string) {
+  return provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, text)
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const result = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: text }],
+          tools: {},
+        })
+        return { result, handle, parts: yield* MessageV2.parts(msg.id) }
+      }),
+    { config: cfg },
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -599,6 +679,131 @@ it.live("session.processor effect tests retry recognized structured json errors"
         expect(yield* llm.calls).toBe(2)
         expect(parts.some((part) => part.type === "text" && part.text === "after")).toBe(true)
         expect(handle.message.error).toBeUndefined()
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests retry immediately when the active wait is woken", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const retry = yield* SessionRetryControl.Service
+        const status = yield* SessionStatus.Service
+
+        yield* llm.error(503, { error: "upstream unavailable" })
+        yield* llm.text("after wake")
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "retry now")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "retry now" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* waitFor(
+          status.get(chat.id).pipe(Effect.map((value) => (value.type === "retry" ? value : undefined))),
+          "timed out waiting for retry status",
+        )
+        expect(yield* llm.calls).toBe(1)
+        expect(yield* retry.wake(chat.id)).toBe(true)
+
+        const exit = yield* Fiber.await(run).pipe(Effect.timeout("250 millis"))
+        const messages = yield* session.messages({ sessionID: chat.id })
+        const parts = yield* MessageV2.parts(msg.id)
+
+        expect(Exit.isSuccess(exit)).toBe(true)
+        expect(yield* llm.calls).toBe(2)
+        expect(messages.map((item) => item.info.id)).toEqual([parent.id, msg.id])
+        expect(parts.some((part) => part.type === "text" && part.text === "after wake")).toBe(true)
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor effect tests persist aborted errors when interrupted during retry backoff", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const status = yield* SessionStatus.Service
+
+        yield* llm.error(503, { error: "upstream unavailable" })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "interrupt retry")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const run = yield* handle
+          .process({
+            user: {
+              id: parent.id,
+              sessionID: chat.id,
+              role: "user",
+              time: parent.time,
+              agent: parent.agent,
+              model: { providerID: ref.providerID, modelID: ref.modelID },
+            } satisfies SessionV1.User,
+            sessionID: chat.id,
+            model: mdl,
+            agent: agent(),
+            system: [],
+            messages: [{ role: "user", content: "interrupt retry" }],
+            tools: {},
+          })
+          .pipe(Effect.forkChild)
+
+        yield* waitFor(
+          status.get(chat.id).pipe(Effect.map((value) => (value.type === "retry" ? value : undefined))),
+          "timed out waiting for retry status",
+        )
+        expect(yield* llm.calls).toBe(1)
+        yield* Fiber.interrupt(run)
+
+        const exit = yield* Fiber.await(run)
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+        const state = yield* status.get(chat.id)
+
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          expect(Cause.hasInterruptsOnly(exit.cause)).toBe(true)
+        }
+        expect(handle.message.error?.name).toBe("MessageAbortedError")
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role === "assistant") {
+          expect(stored.info.error?.name).toBe("MessageAbortedError")
+          expect(stored.info.time.completed).toBeDefined()
+        }
+        expect(state).toMatchObject({ type: "idle" })
       }),
     { config: (url) => providerCfg(url) },
   ),
@@ -1064,4 +1269,37 @@ itFragmentFailure.live("session.processor effect tests retain partial legacy par
       }),
     { config: cfg },
   ),
+)
+
+errorOnlyRetry.it.live("session.processor retries an error-only HTTP 200 stream attempt", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("retry error-only stream")
+
+    expect(result.result).toBe("continue")
+    expect(errorOnlyRetry.calls()).toBe(2)
+    expect(result.handle.message.error).toBeUndefined()
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "recovered" })]))
+  }),
+)
+
+partialTextNoRetry.it.live("session.processor preserves partial text and does not retry an HTTP 200 stream error", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("do not replay partial text")
+
+    expect(result.result).toBe("stop")
+    expect(partialTextNoRetry.calls()).toBe(1)
+    expect(result.handle.message.error?.name).toBe("APIError")
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "partial" })]))
+  }),
+)
+
+toolNoRetry.it.live("session.processor does not replay tools after an HTTP 200 stream error", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("do not replay tools")
+
+    expect(result.result).toBe("stop")
+    expect(toolNoRetry.calls()).toBe(1)
+    expect(result.handle.message.error?.name).toBe("APIError")
+    expect(result.parts.filter((part) => part.type === "tool")).toHaveLength(1)
+  }),
 )

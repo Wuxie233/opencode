@@ -579,6 +579,7 @@ describe("HttpApi SDK", () => {
         const children = yield* capture(() => sdk.session.children({ sessionID: parentID }))
         const todo = yield* capture(() => sdk.session.todo({ sessionID: parentID }))
         const status = yield* capture(() => sdk.session.status())
+        const retry = yield* capture(() => sdk.session.retry({ sessionID: parentID }))
         const messages = yield* capture(() => sdk.session.messages({ sessionID: parentID }))
         const missingGet = yield* capture(() => sdk.session.get({ sessionID: "ses_missing" }))
         const missingMessages = yield* capture(() => sdk.session.messages({ sessionID: "ses_missing", limit: 2 }))
@@ -599,6 +600,7 @@ describe("HttpApi SDK", () => {
             children,
             todo,
             status,
+            retry,
             messages,
             missingGet,
             missingMessages,
@@ -612,6 +614,7 @@ describe("HttpApi SDK", () => {
           allTitles: sessionTitles(all.data),
           childCount: array(children.data).length,
           todoCount: array(todo.data).length,
+          retry: retry.data,
           messageCount: array(messages.data).length,
         }
       }),

@@ -33,6 +33,7 @@ import { Instruction } from "@/session/instruction"
 import { LLM } from "@/session/llm"
 import { SessionProcessor } from "@/session/processor"
 import { SessionPrompt } from "@/session/prompt"
+import { SessionRetryControl } from "@/session/retry-control"
 import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { Session } from "@/session/session"
@@ -248,6 +249,7 @@ const app = LayerNode.group([
   Session.node,
   SessionProjector.node,
   SessionStatus.node,
+  SessionRetryControl.node,
   BackgroundJob.node,
   RuntimeFlags.node,
   EventV2Bridge.node,

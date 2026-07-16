@@ -66,6 +66,8 @@ export const dict = {
   "ui.sessionTurn.retry.attempt": "forsøg #{{attempt}}",
   "ui.sessionTurn.retry.attemptLine": "{{line}} - forsøg #{{attempt}}",
   "ui.sessionTurn.retry.geminiHot": "gemini er meget overbelastet lige nu",
+  "ui.sessionTurn.retry.action": "Prøv igen nu",
+  "ui.sessionTurn.retry.pending": "Prøver igen...",
   "ui.sessionTurn.error.freeUsageExceeded": "Gratis forbrug overskredet",
   "ui.sessionTurn.error.addCredits": "Tilføj kreditter",
 
