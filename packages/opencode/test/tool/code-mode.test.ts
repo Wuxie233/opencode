@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { CODE_MODE_TOOL, CodeModeTool, Parameters, describeCatalog } from "@/tool/code-mode"
-import { CallToolResultSchema, type Tool as MCPToolDef } from "@modelcontextprotocol/sdk/types.js"
+import type { Tool as MCPToolDef } from "@modelcontextprotocol/sdk/types.js"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { MCP } from "@/mcp"
@@ -23,19 +23,17 @@ const ctx: Tool.Context = {
   ask: () => Effect.void,
 }
 
-const handlers = new Map<string, (args: Record<string, unknown>) => unknown | Promise<unknown>>()
-const CLIENT_INFO = { capabilities: { tools: true, prompts: false, resources: false } } satisfies MCP.ClientInfo
-
 function mcpTool(
   name: string,
-  handler: (args: Record<string, unknown>) => unknown | Promise<unknown>,
+  handler: (args: Record<string, unknown>) => unknown,
   inputSchema: Record<string, unknown> = { type: "object", properties: {} },
   outputSchema?: Record<string, unknown>,
 ): MCP.McpTool {
-  handlers.set(name, handler)
   return {
     def: { name, description: name, inputSchema, ...(outputSchema ? { outputSchema } : {}) } as MCPToolDef,
-    clientName: name,
+    client: {
+      callTool: async (params: { arguments?: Record<string, unknown> }) => handler(params.arguments ?? {}),
+    } as unknown as MCP.McpTool["client"],
   }
 }
 
@@ -60,9 +58,7 @@ function harness(input: {
     }),
     Layer.mock(MCP.Service, {
       tools: () => Effect.succeed(input.mcpTools),
-      clients: () => Effect.succeed(Object.fromEntries(input.servers.map((name) => [name, CLIENT_INFO]))),
-      callTool: (_client, tool, args) =>
-        Effect.promise(async () => CallToolResultSchema.parse(await handlers.get(tool)?.(args))),
+      clients: () => Effect.succeed(Object.fromEntries(input.servers.map((name) => [name, {} as any]))),
     }),
   )
 }
@@ -206,7 +202,7 @@ describe("code mode execute", () => {
           description: `${filler}${i}`,
           inputSchema: { type: "object", properties: { value: { type: "string" }, count: { type: "number" } } },
         } as MCPToolDef,
-        clientName: "alpha",
+        client: { callTool: async () => ({ content: [] }) } as unknown as MCP.McpTool["client"],
       }
     }
     tools["zeta_only_tool"] = mcpTool("only_tool", () => "", {

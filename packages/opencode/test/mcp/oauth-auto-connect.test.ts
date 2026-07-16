@@ -149,7 +149,7 @@ mcpTest.instance("first connect to OAuth server shows needs_auth instead of fail
   }),
 )
 
-mcpTest.instance("state() generates a process-local state when none is saved", () =>
+mcpTest.instance("state() generates and persists a new state when none is saved", () =>
   Effect.gen(function* () {
     const auth = yield* McpAuth.Service
     const provider = new McpOAuthProvider(
@@ -164,7 +164,7 @@ mcpTest.instance("state() generates a process-local state when none is saved", (
 
     const state = yield* Effect.promise(() => provider.state())
     expect(state).toHaveLength(64)
-    expect(yield* auth.getFlowOAuthState("test-state-gen")).toBe(state)
+    expect((yield* auth.get("test-state-gen"))?.oauthState).toBe(state)
   }),
 )
 
@@ -179,7 +179,7 @@ mcpTest.instance("state() returns existing state when one is saved", () =>
       auth,
     )
 
-    yield* auth.updateFlowOAuthState("test-state-existing", "pre-saved-state-value")
+    yield* auth.updateOAuthState("test-state-existing", "pre-saved-state-value")
     expect(yield* Effect.promise(() => provider.state())).toBe("pre-saved-state-value")
   }),
 )

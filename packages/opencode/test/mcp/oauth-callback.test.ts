@@ -78,30 +78,6 @@ describe("McpOAuthCallback.ensureRunning", () => {
     expect(McpOAuthCallback.isRunning()).toBe(false)
   })
 
-  test("cancels only the matching directory-scoped pending authorization", async () => {
-    const first = McpOAuthCallback.waitForCallback("first", "/workspace/one\u0000server")
-    const second = McpOAuthCallback.waitForCallback("second", "/workspace/two\u0000server")
-    const firstResult = first.then(
-      () => "resolved",
-      (error) => error,
-    )
-    const secondResult = second.then(
-      () => "resolved",
-      (error) => error,
-    )
-    McpOAuthCallback.cancelPending("/workspace/one\u0000server")
-
-    expect(await firstResult).toMatchObject({ message: "Authorization cancelled" })
-    let settled = false
-    void secondResult.then(() => {
-      settled = true
-    })
-    await Promise.resolve()
-    expect(settled).toBe(false)
-    McpOAuthCallback.cancelPending("/workspace/two\u0000server")
-    expect(await secondResult).toMatchObject({ message: "Authorization cancelled" })
-  })
-
   test("escapes provider error markup in callback HTML", async () => {
     const redirectUri = "http://127.0.0.1:18001/custom/callback"
     await McpOAuthCallback.ensureRunning(redirectUri)

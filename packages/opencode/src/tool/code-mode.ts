@@ -1,5 +1,5 @@
 import * as Tool from "./tool"
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
+import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { Cause, Effect, Schema } from "effect"
 import { CodeMode, Tool as SandboxTool, toolError } from "@opencode-ai/codemode"
 import { MCP } from "@/mcp"
@@ -133,7 +133,6 @@ function toolTree(catalog: readonly CatalogEntry[], run: (entry: CatalogEntry) =
 
 const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: {
   plugin: Plugin.Interface
-  mcp: MCP.Interface
   entry: CatalogEntry
   args: Record<string, unknown>
   callID: string
@@ -146,12 +145,19 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
   )
   const result: CallToolResult = yield* Effect.gen(function* () {
     yield* input.ctx.ask({ permission: input.entry.key, metadata: {}, patterns: ["*"], always: ["*"] })
-    return yield* Effect.gen(function* () {
-      const raw = yield* input.mcp.callTool(input.entry.tool.clientName, input.entry.tool.def.name, input.args, {
-        abort: input.ctx.abort,
-        timeout: input.entry.tool.timeout,
-      })
-      if (!raw) throw new Error(`MCP tool is not connected: ${input.entry.tool.clientName}`)
+    // Deliberately mirrors McpCatalog.convertTool's transport call so the MCP service stays free of tool-loop concerns.
+    return yield* Effect.promise(async () => {
+      const raw = await input.entry.tool.client.callTool(
+        { name: input.entry.tool.def.name, arguments: input.args },
+        CallToolResultSchema,
+        {
+          resetTimeoutOnProgress: true,
+          signal: input.ctx.abort,
+          timeout: input.entry.tool.timeout,
+          // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
+          onprogress: () => {},
+        },
+      )
       if (raw.isError)
         throw new Error(
           raw.content
@@ -216,7 +222,6 @@ export const CodeModeTool = Tool.define(
             childCalls += 1
             const result = yield* invokeChildTool({
               plugin,
-              mcp,
               entry,
               args: (input ?? {}) as Record<string, unknown>,
               callID: `${ctx.callID ?? entry.key}/${childCalls}`,

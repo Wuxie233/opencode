@@ -50,12 +50,6 @@ export interface Interface {
   readonly updateOAuthState: (mcpName: string, oauthState: string) => Effect.Effect<void>
   readonly getOAuthState: (mcpName: string) => Effect.Effect<string | undefined>
   readonly clearOAuthState: (mcpName: string) => Effect.Effect<void>
-  readonly updateFlowCodeVerifier: (flowKey: string, codeVerifier: string) => Effect.Effect<void>
-  readonly getFlowCodeVerifier: (flowKey: string) => Effect.Effect<string | undefined>
-  readonly clearFlowCodeVerifier: (flowKey: string) => Effect.Effect<void>
-  readonly updateFlowOAuthState: (flowKey: string, oauthState: string) => Effect.Effect<void>
-  readonly getFlowOAuthState: (flowKey: string) => Effect.Effect<string | undefined>
-  readonly clearFlowOAuthState: (flowKey: string) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/McpAuth") {}
@@ -67,7 +61,6 @@ const layer = Layer.effect(
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const flock = yield* EffectFlock.Service
-    const flows = new Map<string, { codeVerifier?: string; oauthState?: string }>()
 
     const read = Effect.fn("McpAuth.read")(function* () {
       return yield* fs.readJson(filepath).pipe(
@@ -147,37 +140,6 @@ const layer = Layer.effect(
       const entry = yield* get(mcpName)
       return entry?.oauthState
     })
-    const updateFlowCodeVerifier = Effect.fn("McpAuth.updateFlowCodeVerifier")(function* (
-      flowKey: string,
-      value: string,
-    ) {
-      const flow = flows.get(flowKey) ?? {}
-      flow.codeVerifier = value
-      flows.set(flowKey, flow)
-    })
-    const getFlowCodeVerifier = Effect.fn("McpAuth.getFlowCodeVerifier")(function* (flowKey: string) {
-      return flows.get(flowKey)?.codeVerifier
-    })
-    const clearFlowCodeVerifier = Effect.fn("McpAuth.clearFlowCodeVerifier")(function* (flowKey: string) {
-      const flow = flows.get(flowKey)
-      if (!flow) return
-      delete flow.codeVerifier
-      if (!flow.oauthState) flows.delete(flowKey)
-    })
-    const updateFlowOAuthState = Effect.fn("McpAuth.updateFlowOAuthState")(function* (flowKey: string, value: string) {
-      const flow = flows.get(flowKey) ?? {}
-      flow.oauthState = value
-      flows.set(flowKey, flow)
-    })
-    const getFlowOAuthState = Effect.fn("McpAuth.getFlowOAuthState")(function* (flowKey: string) {
-      return flows.get(flowKey)?.oauthState
-    })
-    const clearFlowOAuthState = Effect.fn("McpAuth.clearFlowOAuthState")(function* (flowKey: string) {
-      const flow = flows.get(flowKey)
-      if (!flow) return
-      delete flow.oauthState
-      if (!flow.codeVerifier) flows.delete(flowKey)
-    })
 
     return Service.of({
       all,
@@ -192,12 +154,6 @@ const layer = Layer.effect(
       updateOAuthState,
       getOAuthState,
       clearOAuthState,
-      updateFlowCodeVerifier,
-      getFlowCodeVerifier,
-      clearFlowCodeVerifier,
-      updateFlowOAuthState,
-      getFlowOAuthState,
-      clearFlowOAuthState,
     })
   }),
 )

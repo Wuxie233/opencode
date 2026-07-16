@@ -40,7 +40,6 @@ const mcp = Layer.succeed(
     clients: () => Effect.succeed({}),
     instructions: () => Effect.succeed([]),
     tools: () => Effect.succeed({}),
-    callTool: () => Effect.succeed(undefined),
     prompts: () => Effect.succeed({}),
     resources: () => Effect.succeed({}),
     resourceTemplates: () => Effect.succeed({}),

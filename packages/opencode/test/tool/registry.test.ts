@@ -25,7 +25,6 @@ import type { Tool as MCPToolDef } from "@modelcontextprotocol/sdk/types.js"
 const configLayer = TestConfig.layer({
   directories: () => InstanceState.directory.pipe(Effect.map((dir) => [path.join(dir, ".opencode")])),
 })
-const MCP_CLIENT_INFO = { capabilities: { tools: true, prompts: false, resources: false } } satisfies MCP.ClientInfo
 
 // Fake Plugin.Service that returns a single plugin whose `tool` map contains
 // one definition with `args: undefined`. Used to exercise the plugin entry
@@ -73,11 +72,10 @@ const withCodeMode = testEffect(
                 description: "current weather",
                 inputSchema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
               } as MCPToolDef,
-              clientName: "weather",
+              client: {} as MCP.McpTool["client"],
             },
           }),
-        clients: () => Effect.succeed({ weather: MCP_CLIENT_INFO }),
-        callTool: () => Effect.succeed(undefined),
+        clients: () => Effect.succeed({ weather: {} as any }),
       }),
     ],
   ]),
@@ -91,7 +89,6 @@ const withEmptyCodeMode = testEffect(
       Layer.mock(MCP.Service, {
         tools: () => Effect.succeed({}),
         clients: () => Effect.succeed({}),
-        callTool: () => Effect.succeed(undefined),
       }),
     ],
   ]),
