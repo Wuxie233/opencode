@@ -1,6 +1,6 @@
 import { checksum } from "@opencode-ai/core/util/encode"
 import DOMPurify from "dompurify"
-import { project } from "./markdown-stream"
+import { projectCompleted } from "./markdown-stream"
 
 export type MarkdownCacheEntry = {
   raw: string
@@ -10,6 +10,7 @@ export type MarkdownCacheEntry = {
 
 const max = 200
 const cache = new Map<string, MarkdownCacheEntry>()
+let purifier = DOMPurify
 const config = {
   USE_PROFILES: { html: true, mathMl: true },
   SANITIZE_NAMED_PROPS: true,
@@ -33,8 +34,9 @@ if (typeof window !== "undefined" && DOMPurify.isSupported) {
 }
 
 export function sanitizeMarkdown(html: string) {
-  if (!DOMPurify.isSupported) return ""
-  return DOMPurify.sanitize(html, config)
+  if (!purifier.isSupported && typeof window !== "undefined") purifier = DOMPurify(window)
+  if (!purifier.isSupported) return ""
+  return purifier.sanitize(html, config)
 }
 
 export function getCachedMarkdown(key: string) {
@@ -57,8 +59,10 @@ export async function preloadMarkdown(
   cacheKey: string,
   parser: { parse(text: string): string | Promise<string> },
 ) {
+  const projection = await projectCompleted(text, () => true)
+  if (!projection) return
   await Promise.all(
-    project(undefined, text, false).blocks.map(async (block, index) => {
+    projection.blocks.map(async (block, index) => {
       if (block.mode === "code") return
       const key = `${cacheKey}:${index}:${block.mode}`
       const cached = getCachedMarkdown(key)

@@ -26,6 +26,10 @@ export type MarkdownWorkerState = {
   unstable: MarkdownToken[]
 }
 
+export class MarkdownWorkerDisposedError extends Error {}
+export class MarkdownWorkerSupersededError extends Error {}
+export class MarkdownWorkerUnavailableError extends Error {}
+
 export function shouldReleaseMarkdownWorkerState(complete: boolean, latestID: number | undefined, responseID: number) {
   return complete && latestID === responseID
 }

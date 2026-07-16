@@ -2,6 +2,9 @@ import MarkdownShikiWorkerUrl from "./markdown-shiki.worker.ts?worker&url"
 import { OpenCodeTheme } from "@opencode-ai/ui/context/marked"
 import {
   applyMarkdownWorkerResponse,
+  MarkdownWorkerDisposedError,
+  MarkdownWorkerSupersededError,
+  MarkdownWorkerUnavailableError,
   shouldReleaseMarkdownWorkerState,
   type MarkdownWorkerRequest,
   type MarkdownWorkerResponse,
@@ -24,7 +27,7 @@ const states = new Map<string, MarkdownWorkerState>()
 const keys = new Set<string>()
 const latest = new Map<string, number>()
 const transport = createWorkerTransport<Extract<MarkdownWorkerRequest, { type: "highlight" }>>({
-  post: (request) => worker!.postMessage(request),
+  post: (request) => worker?.postMessage(request),
   supersede: (request) => {
     const result = pending.get(request.id)
     if (!result) return
@@ -34,12 +37,15 @@ const transport = createWorkerTransport<Extract<MarkdownWorkerRequest, { type: "
 })
 
 export function highlightStreamingCode(key: string, text: string, language: string, complete = false) {
-  const instance = getWorker()
+  getWorker()
   const id = ++nextID
   latest.set(key, id)
   keys.delete(key)
   keys.add(key)
-  if (keys.size > 200) disposeStreamingCode(keys.values().next().value!)
+  if (keys.size > 200) {
+    const oldest = keys.values().next().value
+    if (oldest) disposeStreamingCode(oldest)
+  }
   return new Promise<MarkdownWorkerState>((resolve, reject) => {
     pending.set(id, { key, complete, resolve, reject })
     transport.send({ type: "highlight", id, key, text, language, complete })
@@ -58,10 +64,6 @@ export function disposeStreamingCode(key: string) {
   })
   worker?.postMessage({ type: "dispose", key } satisfies MarkdownWorkerRequest)
 }
-
-export class MarkdownWorkerDisposedError extends Error {}
-export class MarkdownWorkerSupersededError extends Error {}
-export class MarkdownWorkerUnavailableError extends Error {}
 
 function getWorker() {
   if (worker) return worker

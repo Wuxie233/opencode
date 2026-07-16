@@ -2,6 +2,7 @@
 import * as mod from "./markdown"
 import { create } from "@opencode-ai/ui/storybook/scaffold"
 import { markdown } from "@opencode-ai/ui/storybook/fixtures"
+import { MarkdownPerformance } from "./markdown-performance"
 
 const docs = `### Overview
 Render sanitized Markdown with code blocks, inline code, and safe links.
@@ -51,3 +52,7 @@ export default {
 }
 
 export const Basic = story.Basic
+
+export const Performance = {
+  render: () => <MarkdownPerformance />,
+}
