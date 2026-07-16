@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Context, Effect, Layer, Tracer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { SyncPaths } from "../../src/server/routes/instance/httpapi/groups/sync"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -12,23 +12,9 @@ import { httpApiLayer, requestInDirectory } from "./httpapi-layer"
 
 const originalWorkspaces = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
 const context = Context.empty() as Context.Context<unknown>
-const spans: Tracer.NativeSpan[] = []
-const tracer = Tracer.make({
-  span(options) {
-    const span = new Tracer.NativeSpan(options)
-    spans.push(span)
-    return span
-  },
-})
-const it = testEffect(
-  Layer.mergeAll(
-    LayerNode.compile(Session.node),
-    httpApiLayer.pipe(Layer.provide(Layer.succeed(Tracer.Tracer, tracer))),
-  ),
-)
+const it = testEffect(Layer.mergeAll(LayerNode.compile(Session.node), httpApiLayer))
 
 afterEach(async () => {
-  spans.length = 0
   mock.restore()
   Flag.OPENCODE_EXPERIMENTAL_WORKSPACES = originalWorkspaces
   await disposeAllInstances()
@@ -63,12 +49,6 @@ describe("sync HttpApi", () => {
           data: Record<string, unknown>
         }>
         expect(rows.map((row) => row.aggregate_id)).toContain(session.id)
-        const historySpan = spans.findLast((span) => span.attributes.has("sync.history.known_aggregates"))
-        expect(historySpan?.attributes.get("sync.history.known_aggregates")).toBe(0)
-        expect(historySpan?.attributes.get("sync.history.events")).toBe(rows.length)
-        expect(historySpan?.attributes.get("sync.history.aggregates")).toBe(
-          new Set(rows.map((row) => row.aggregate_id)).size,
-        )
 
         const replayed = yield* requestInDirectory(SyncPaths.replay, tmp.directory, {
           method: "POST",

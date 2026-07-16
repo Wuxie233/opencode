@@ -428,11 +428,6 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
   before?: string
 }) {
   const { db } = yield* Database.Service
-  yield* Effect.annotateCurrentSpan({
-    "session.id": input.sessionID,
-    "message.page.limit": input.limit,
-    "message.page.has_cursor": input.before !== undefined,
-  })
   const before = input.before ? cursor.decode(input.before) : undefined
   const where = before
     ? and(eq(MessageTable.session_id, input.sessionID), older(before))
@@ -453,12 +448,6 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
       .get()
       .pipe(Effect.orDie)
     if (!row) return yield* new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-    yield* Effect.annotateCurrentSpan({
-      "message.page.scanned": 0,
-      "message.page.messages": 0,
-      "message.page.parts": 0,
-      "message.page.more": false,
-    })
     return {
       items: [] as WithParts[],
       more: false,
@@ -469,12 +458,6 @@ export const page = Effect.fn("MessageV2.page")(function* (input: {
   const slice = more ? rows.slice(0, input.limit) : rows
   const items = yield* hydrate(db, slice)
   items.reverse()
-  yield* Effect.annotateCurrentSpan({
-    "message.page.scanned": rows.length,
-    "message.page.messages": items.length,
-    "message.page.parts": items.reduce((total, item) => total + item.parts.length, 0),
-    "message.page.more": more,
-  })
   const tail = slice.at(-1)
   return {
     items,

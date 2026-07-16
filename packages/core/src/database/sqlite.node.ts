@@ -2,6 +2,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite"
 import { drizzle } from "drizzle-orm/node-sqlite"
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
+import * as Fiber from "effect/Fiber"
 import { identity } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Scope from "effect/Scope"
@@ -56,22 +57,13 @@ const make = (options: Config) =>
       Effect.withFiber<Array<Record<string, unknown>>, SqlError>((fiber) => {
         const statement = native.prepare(query)
         statement.setReadBigInts(Context.get(fiber.context, Client.SafeIntegers))
-        const started = performance.now()
         try {
-          const rows = statement.all(...(params as SQLInputValue[])) as Array<Record<string, unknown>>
-          return Effect.annotateCurrentSpan({
-            "db.sqlite.execute_ms": performance.now() - started,
-            "db.response.returned_rows": rows.length,
-          }).pipe(Effect.as(rows))
+          return Effect.succeed(statement.all(...(params as SQLInputValue[])) as Array<Record<string, unknown>>)
         } catch (cause) {
-          return Effect.annotateCurrentSpan("db.sqlite.execute_ms", performance.now() - started).pipe(
-            Effect.andThen(
-              Effect.fail(
-                new SqlError({
-                  reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
-                }),
-              ),
-            ),
+          return Effect.fail(
+            new SqlError({
+              reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
+            }),
           )
         }
       })
@@ -81,22 +73,15 @@ const make = (options: Config) =>
         const statement = native.prepare(query)
         statement.setReadBigInts(Context.get(fiber.context, Client.SafeIntegers))
         statement.setReturnArrays(true)
-        const started = performance.now()
         try {
-          const rows = statement.all(...(params as SQLInputValue[])) as unknown as ReadonlyArray<ReadonlyArray<unknown>>
-          return Effect.annotateCurrentSpan({
-            "db.sqlite.execute_ms": performance.now() - started,
-            "db.response.returned_rows": rows.length,
-          }).pipe(Effect.as(rows))
+          return Effect.succeed(
+            statement.all(...(params as SQLInputValue[])) as unknown as ReadonlyArray<ReadonlyArray<unknown>>,
+          )
         } catch (cause) {
-          return Effect.annotateCurrentSpan("db.sqlite.execute_ms", performance.now() - started).pipe(
-            Effect.andThen(
-              Effect.fail(
-                new SqlError({
-                  reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
-                }),
-              ),
-            ),
+          return Effect.fail(
+            new SqlError({
+              reason: classifySqliteError(cause, { message: "Failed to execute statement", operation: "execute" }),
+            }),
           )
         }
       })
@@ -128,22 +113,21 @@ const make = (options: Config) =>
     })
 
     const semaphore = yield* Semaphore.make(1)
-    const acquirer = Effect.uninterruptibleMask((restore) =>
-      Effect.gen(function* () {
-        const started = performance.now()
-        const permits = yield* restore(semaphore.take(1))
-        yield* Effect.annotateCurrentSpan("db.sqlite.permit_wait_ms", performance.now() - started)
-        const scope = yield* Scope.Scope
-        yield* Scope.addFinalizer(scope, semaphore.release(permits))
-        return connection
-      }),
-    )
+    const acquirer = semaphore.withPermits(1)(Effect.succeed(connection))
+    const transactionAcquirer = Effect.uninterruptibleMask((restore) => {
+      const fiber = Fiber.getCurrent()!
+      const scope = Context.getUnsafe(fiber.context, Scope.Scope)
+      return Effect.as(
+        Effect.tap(restore(semaphore.take(1)), () => Scope.addFinalizer(scope, semaphore.release(1))),
+        connection,
+      )
+    })
 
     const client = Object.assign(
       (yield* Client.make({
         acquirer,
         compiler,
-        transactionAcquirer: acquirer,
+        transactionAcquirer,
         spanAttributes: [
           ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
           [ATTR_DB_SYSTEM_NAME, "sqlite"],
@@ -153,7 +137,7 @@ const make = (options: Config) =>
       {
         [TypeId]: TypeId,
         config: options,
-        loadExtension: (path: string) => Effect.scoped(Effect.flatMap(acquirer, (_) => _.loadExtension(path))),
+        loadExtension: (path: string) => Effect.flatMap(acquirer, (_) => _.loadExtension(path)),
       },
     )
 

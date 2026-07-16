@@ -71,8 +71,7 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
 
     const history = Effect.fn("SyncHttpApi.history")(function* (ctx: { payload: typeof HistoryPayload.Type }) {
       const exclude = Object.entries(ctx.payload)
-      yield* Effect.annotateCurrentSpan("sync.history.known_aggregates", exclude.length)
-      const rows = yield* db
+      return yield* db
         .select()
         .from(EventTable)
         .where(
@@ -83,11 +82,6 @@ export const syncHandlers = HttpApiBuilder.group(InstanceHttpApi, "sync", (handl
         .orderBy(asc(EventTable.seq))
         .all()
         .pipe(Effect.orDie)
-      yield* Effect.annotateCurrentSpan({
-        "sync.history.events": rows.length,
-        "sync.history.aggregates": new Set(rows.map((row) => row.aggregate_id)).size,
-      })
-      return rows
     })
 
     return handlers.handle("start", start).handle("replay", replay).handle("steal", steal).handle("history", history)
