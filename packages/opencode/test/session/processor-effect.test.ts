@@ -254,6 +254,13 @@ function retryGateEnv(first: Stream.Stream<LLMEvent, unknown>) {
 }
 
 const errorOnlyRetry = retryGateEnv(Stream.fail(new ProviderError.ResponseStreamError("HTTP 200 stream error")))
+const emptySuccessRetry = retryGateEnv(
+  Stream.make(
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
+  ),
+)
 const partialTextNoRetry = retryGateEnv(
   Stream.concat(
     Stream.make(
@@ -271,6 +278,16 @@ const toolNoRetry = retryGateEnv(
       LLMEvent.toolCall({ id: "call-safe", name: "lookup", input: {}, providerExecuted: true }),
     ),
     Stream.fail(new ProviderError.ResponseStreamError("HTTP 200 stream error after tool")),
+  ),
+)
+const reasoningNoRetry = retryGateEnv(
+  Stream.make(
+    LLMEvent.stepStart({ index: 0 }),
+    LLMEvent.reasoningStart({ id: "reasoning-safe" }),
+    LLMEvent.reasoningDelta({ id: "reasoning-safe", text: "thinking" }),
+    LLMEvent.reasoningEnd({ id: "reasoning-safe" }),
+    LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+    LLMEvent.finish({ reason: "stop" }),
   ),
 )
 
@@ -817,7 +834,7 @@ it.live("session.processor effect tests publish retry status updates", () =>
         const events = yield* EventV2Bridge.Service
 
         yield* llm.error(503, { error: "boom" })
-        yield* llm.text("")
+        yield* llm.text("recovered")
 
         const chat = yield* session.create({})
         const parent = yield* user(chat.id, "retry")
@@ -1282,6 +1299,17 @@ errorOnlyRetry.it.live("session.processor retries an error-only HTTP 200 stream 
   }),
 )
 
+emptySuccessRetry.it.live("session.processor retries a successful empty response", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("retry empty success")
+
+    expect(result.result).toBe("continue")
+    expect(emptySuccessRetry.calls()).toBe(2)
+    expect(result.handle.message.error).toBeUndefined()
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "recovered" })]))
+  }),
+)
+
 partialTextNoRetry.it.live("session.processor preserves partial text and does not retry an HTTP 200 stream error", () =>
   Effect.gen(function* () {
     const result = yield* processOnce("do not replay partial text")
@@ -1301,5 +1329,18 @@ toolNoRetry.it.live("session.processor does not replay tools after an HTTP 200 s
     expect(toolNoRetry.calls()).toBe(1)
     expect(result.handle.message.error?.name).toBe("APIError")
     expect(result.parts.filter((part) => part.type === "tool")).toHaveLength(1)
+  }),
+)
+
+reasoningNoRetry.it.live("session.processor accepts a reasoning-only response without retrying", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("accept reasoning only")
+
+    expect(result.result).toBe("continue")
+    expect(reasoningNoRetry.calls()).toBe(1)
+    expect(result.handle.message.error).toBeUndefined()
+    expect(result.parts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "reasoning", text: "thinking" })]),
+    )
   }),
 )

@@ -26,6 +26,7 @@ import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { ProviderError } from "@/provider/error"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue"
@@ -460,6 +461,7 @@ const layer = Layer.effect(
             if (ctx.snapshot) {
               const patch = yield* snapshot.patch(ctx.snapshot)
               if (patch.files.length) {
+                attemptVisible = true
                 yield* session.updatePart({
                   id: PartID.ascending(),
                   messageID: ctx.assistantMessage.id,
@@ -530,6 +532,7 @@ const layer = Layer.effect(
               ctx.currentText.time = { start: ctx.currentText.time?.start ?? end, end }
             }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
+            if (ctx.currentText.text.trim()) attemptVisible = true
             yield* session.updatePart(ctx.currentText)
             ctx.currentText = undefined
             return
@@ -540,7 +543,8 @@ const layer = Layer.effect(
       })
 
       function visibleEvent(value: StreamEvent) {
-        return !["finish", "provider-error"].includes(value.type)
+        if (value.type === "text-delta" || value.type === "reasoning-delta") return value.text.trim().length > 0
+        return value.type.startsWith("tool-")
       }
 
       const cleanup = Effect.fn("SessionProcessor.cleanup")(function* () {
@@ -656,6 +660,9 @@ const layer = Layer.effect(
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
+            if (!attemptVisible && !ctx.needsCompaction) {
+              return yield* Effect.fail(new ProviderError.ResponseStreamError("Provider returned an empty response"))
+            }
           }).pipe(
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
