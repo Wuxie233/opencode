@@ -1,13 +1,14 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { Deferred, Effect, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Fiber, Layer } from "effect"
+import { GlobalBus } from "../../src/bus/global"
 import { InstanceRef } from "../../src/effect/instance-ref"
 import { registerDisposer } from "../../src/effect/instance-registry"
 import { InstanceBootstrap } from "../../src/project/bootstrap"
 import { InstanceStore } from "../../src/project/instance-store"
 import { tmpdirScoped } from "../fixture/fixture"
-import { testEffect } from "../lib/effect"
+import { awaitWithTimeout, testEffect } from "../lib/effect"
 
 let bootstrapRun: Effect.Effect<void> = Effect.void
 const noopBootstrap = Layer.succeed(
@@ -166,6 +167,52 @@ describe("InstanceStore", () => {
     }),
   )
 
+  it.live("isolates synchronous disposer failures during reload", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      let disposed = 0
+      yield* registerDisposerScoped(() => {
+        throw new Error("dispose failed")
+      })
+      yield* registerDisposerScoped(async () => {
+        disposed++
+      })
+
+      const first = yield* store.load({ directory: dir })
+      const second = yield* awaitWithTimeout(store.reload({ directory: dir }), "reload did not finish")
+      const cached = yield* awaitWithTimeout(store.load({ directory: dir }), "load after reload did not finish")
+
+      expect(second).not.toBe(first)
+      expect(cached).toBe(second)
+      expect(disposed).toBe(1)
+    }),
+  )
+
+  it.live("removes the replacement when reload cleanup fails", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const first = yield* store.load({ directory: dir })
+      const listener = (event: Parameters<typeof GlobalBus.emit>[1]) => {
+        if (event.directory === dir && event.payload.type === "server.instance.disposed") {
+          throw new Error("event delivery failed")
+        }
+      }
+      const reloaded = yield* Effect.acquireUseRelease(
+        Effect.sync(() => GlobalBus.on("event", listener)),
+        () => store.reload({ directory: dir }).pipe(Effect.exit),
+        () => Effect.sync(() => GlobalBus.off("event", listener)),
+      )
+
+      expect(reloaded._tag).toBe("Failure")
+      if (reloaded._tag === "Failure")
+        expect(Cause.squash(reloaded.cause)).toMatchObject({ message: "event delivery failed" })
+      const loaded = yield* awaitWithTimeout(store.load({ directory: dir }), "load after failed reload did not finish")
+      expect(loaded).not.toBe(first)
+    }),
+  )
+
   it.live("stale dispose does not delete an in-flight reload", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
@@ -195,6 +242,28 @@ describe("InstanceStore", () => {
 
       expect(disposed).toEqual([dir])
       expect(yield* store.load({ directory: dir })).toBe(second)
+    }),
+  )
+
+  it.live("finishes closing when reload is interrupted during disposal", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const disposing = yield* Deferred.make<void>()
+      const finish = yield* Deferred.make<void>()
+      yield* registerDisposerScoped(async () => {
+        Deferred.doneUnsafe(disposing, Effect.void)
+        await Effect.runPromise(Deferred.await(finish))
+      })
+
+      yield* store.load({ directory: dir })
+      const reload = yield* store.reload({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Deferred.await(disposing)
+      const interrupted = yield* Fiber.interrupt(reload).pipe(Effect.forkScoped)
+      yield* Deferred.succeed(finish, undefined)
+      yield* Fiber.join(interrupted)
+
+      expect((yield* store.load({ directory: dir })).directory).toBe(dir)
     }),
   )
 

@@ -275,7 +275,24 @@ function createServerSdkContextBase(server: ServerConnection.Any, scope: ServerS
           const kind = await protocol
           const events =
             kind === "v1"
-              ? (await eventSdk.global.event({ signal: attempt.signal })).stream
+              ? (
+                  await eventSdk.global.event(
+                    { include_sync: false },
+                    {
+                      signal: attempt.signal,
+                      onSseError: (error) => {
+                        if (isStreamClosed(error, attempt?.signal)) return
+                        if (streamErrorLogged) return
+                        streamErrorLogged = true
+                        console.error("[global-sdk] event stream error", {
+                          url: server.http.url,
+                          fetch: eventFetch ? "platform" : "webview",
+                          error,
+                        })
+                      },
+                    },
+                  )
+                ).stream
               : eventApi.event.subscribe({ signal: attempt.signal })
           let yielded = Date.now()
           for await (const event of events) {

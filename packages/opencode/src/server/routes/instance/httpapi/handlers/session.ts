@@ -1,5 +1,6 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
+import { InstanceRef } from "@/effect/instance-ref"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
@@ -20,6 +21,7 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
 import * as Stream from "effect/Stream"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceStore } from "@/project/instance-store"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
@@ -61,6 +63,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
+    const store = yield* InstanceStore.Service
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -319,17 +322,28 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof PromptPayload.Type
     }) {
       yield* requireSession(ctx.params.sessionID)
-      yield* promptSvc.prompt({ ...ctx.payload, sessionID: ctx.params.sessionID }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.gen(function* () {
-            yield* Effect.logError("prompt_async failed", { sessionID: ctx.params.sessionID, cause })
-            yield* events.publish(Session.Event.Error, {
-              sessionID: ctx.params.sessionID,
-              error: new NamedError.Unknown({ message: Cause.pretty(cause) }).toObject(),
-            })
-          }),
-        ),
-        Effect.forkIn(scope, { startImmediately: true }),
+      const directory = yield* InstanceState.directory
+      yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const lease = yield* store.acquire({ directory })
+          yield* promptSvc
+            .prompt({ ...ctx.payload, sessionID: ctx.params.sessionID })
+            .pipe(
+              Effect.provideService(InstanceRef, lease.context),
+              Effect.catchCause((cause) =>
+                Effect.gen(function* () {
+                  yield* Effect.logError("prompt_async failed", { sessionID: ctx.params.sessionID, cause })
+                  yield* events.publish(Session.Event.Error, {
+                    sessionID: ctx.params.sessionID,
+                    error: new NamedError.Unknown({ message: Cause.pretty(cause) }).toObject(),
+                  })
+                }),
+              ),
+              Effect.ensuring(lease.release),
+              Effect.interruptible,
+              Effect.forkIn(scope, { startImmediately: true }),
+            )
+        }),
       )
       return HttpApiSchema.NoContent.make()
     })

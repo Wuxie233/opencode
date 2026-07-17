@@ -6,6 +6,7 @@ import { Snapshot } from "@/snapshot"
 import { Session } from "./session"
 import { SessionID, MessageID } from "./schema"
 import { Config } from "@/config/config"
+import { NotFoundError } from "@/storage/storage"
 
 function unquoteGitPath(input: string) {
   if (!input.startsWith('"')) return input
@@ -113,13 +114,8 @@ const layer = Layer.effect(
       })
       yield* events.publish(Session.Event.Diff, { sessionID: input.sessionID, diff: [] })
       if ((yield* config.get()).snapshot === false) return
-      const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
-      if (!all.length) return
-
-      const messages = all.filter(
-        (m) => m.info.id === input.messageID || (m.info.role === "assistant" && m.info.parentID === input.messageID),
-      )
-      const target = messages.find((m) => m.info.id === input.messageID)
+      const messages = yield* sessions.turn(input).pipe(Effect.orDie)
+      const target = messages.find((message) => message.info.id === input.messageID)
       if (!target || target.info.role !== "user") return
       const msgDiffs = yield* computeDiff({ messages })
       target.info.summary = { ...target.info.summary, diffs: msgDiffs }
@@ -128,9 +124,13 @@ const layer = Layer.effect(
 
     const diff = Effect.fn("SessionSummary.diff")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
       if (!input.messageID) return []
-      const message = (yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)).find(
-        (item) => item.info.id === input.messageID,
-      )
+      const message = yield* sessions
+        .getMessage({ sessionID: input.sessionID, messageID: input.messageID })
+        .pipe(
+          Effect.catchIf(NotFoundError.isInstance, () =>
+            sessions.get(input.sessionID).pipe(Effect.as(undefined), Effect.orDie),
+          ),
+        )
       if (!message || message.info.role !== "user") return []
       const diffs = message.info.summary?.diffs ?? []
       return diffs.map((item) => {
