@@ -5,13 +5,15 @@ import { EventV2 } from "@opencode-ai/core/event"
 import { Installation } from "@/installation"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { Effect, Queue, Schema } from "effect"
+import { Cause, Effect, Queue, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import * as Sse from "effect/unstable/encoding/Sse"
 import { RootHttpApi } from "../api"
-import { GlobalUpgradeInput } from "../groups/global"
+import { GlobalEventQuery, GlobalUpgradeInput } from "../groups/global"
+
+const subscriberCapacity = 256
 
 function eventData(data: unknown): Sse.Event {
   return {
@@ -30,16 +32,20 @@ function parseBody(body: string) {
   }
 }
 
-function eventResponse() {
+function eventResponse(includeSync: boolean) {
   return Effect.gen(function* () {
     yield* Effect.logInfo("global event connected")
-    const events = Stream.callback<GlobalBusEvent>((queue) => {
-      const handler = (event: GlobalBusEvent) => Queue.offerUnsafe(queue, event)
-      return Effect.acquireRelease(
-        Effect.sync(() => GlobalBus.on("event", handler)),
-        () => Effect.sync(() => GlobalBus.off("event", handler)),
-      )
-    })
+    const queue = yield* Queue.dropping<GlobalBusEvent, EventV2.SubscriberOverflowError>(subscriberCapacity)
+    const handler = (event: GlobalBusEvent) => {
+      if (!includeSync && event.payload.type === "sync") return
+      if (Queue.offerUnsafe(queue, event)) return
+      Queue.failCauseUnsafe(queue, Cause.fail(new EventV2.SubscriberOverflowError({ capacity: subscriberCapacity })))
+    }
+    GlobalBus.on("event", handler)
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => GlobalBus.off("event", handler)).pipe(Effect.andThen(Queue.shutdown(queue)), Effect.asVoid),
+    )
+    const events = Stream.fromQueue(queue)
     const heartbeat = Stream.tick("10 seconds").pipe(
       Stream.drop(1),
       Stream.map(() => ({ payload: { id: EventV2.ID.create(), type: "server.heartbeat", properties: {} } })),
@@ -75,8 +81,8 @@ export const globalHandlers = HttpApiBuilder.group(RootHttpApi, "global", (handl
       return { healthy: true as const, version: InstallationVersion }
     })
 
-    const event = Effect.fn("GlobalHttpApi.event")(function* () {
-      return yield* eventResponse()
+    const event = Effect.fn("GlobalHttpApi.event")(function* (ctx: { query: typeof GlobalEventQuery.Type }) {
+      return yield* eventResponse(ctx.query.include_sync ?? true)
     })
 
     const configGet = Effect.fn("GlobalHttpApi.configGet")(function* () {

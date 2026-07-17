@@ -1,6 +1,6 @@
 import { NodeHttpServer } from "@effect/platform-node"
 import { describe, expect } from "bun:test"
-import { Context, Effect, Layer, Option } from "effect"
+import { Context, Effect, Fiber, Layer, Option, Queue, Schema, Stream } from "effect"
 import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { Auth } from "../../src/auth"
@@ -16,6 +16,37 @@ import { globalHandlers } from "../../src/server/routes/instance/httpapi/handler
 import { authorizationLayer } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { schemaErrorLayer } from "../../src/server/routes/instance/httpapi/middleware/schema-error"
 import { testEffect } from "../lib/effect"
+import { GlobalBus } from "@/bus/global"
+
+const GlobalEvent = Schema.Struct({
+  directory: Schema.optional(Schema.String),
+  payload: Schema.Struct({
+    id: Schema.optional(Schema.String),
+    type: Schema.String,
+  }),
+})
+
+const openEvents = (path: string) =>
+  Effect.gen(function* () {
+    const response = yield* HttpClient.get(path)
+    const reader = yield* Queue.unbounded<Uint8Array>()
+    const fiber = yield* response.stream.pipe(
+      Stream.runForEach((value) => Queue.offer(reader, value)),
+      Effect.forkScoped,
+    )
+    return { reader, fiber }
+  })
+
+const nextEvent = (reader: Queue.Dequeue<Uint8Array>) =>
+  Queue.take(reader).pipe(
+    Effect.map((value) =>
+      Schema.decodeUnknownSync(GlobalEvent)(JSON.parse(new TextDecoder().decode(value).replace(/^data: /, ""))),
+    ),
+    Effect.timeoutOrElse({
+      duration: "5 seconds",
+      orElse: () => Effect.fail(new Error("timed out waiting for global event")),
+    }),
+  )
 
 const apiLayer = HttpRouter.serve(
   HttpApiBuilder.layer(RootHttpApi).pipe(
@@ -61,6 +92,29 @@ describe("global HttpApi", () => {
 
       expect(response.status).toBe(400)
       expect(yield* response.json).toEqual({ success: false, error: "Invalid request body" })
+    }),
+  )
+
+  it.live("preserves sync events by default for older clients", () =>
+    Effect.gen(function* () {
+      const { reader, fiber } = yield* openEvents(GlobalPaths.event)
+      expect(yield* nextEvent(reader)).toMatchObject({ payload: { type: "server.connected" } })
+
+      GlobalBus.emit("event", { directory: "/repo", payload: { type: "sync", syncEvent: { id: "evt_sync" } } })
+      expect(yield* nextEvent(reader)).toMatchObject({ directory: "/repo", payload: { type: "sync" } })
+      yield* Fiber.interrupt(fiber)
+    }),
+  )
+
+  it.live("filters sync events before enqueue when explicitly disabled", () =>
+    Effect.gen(function* () {
+      const { reader, fiber } = yield* openEvents(`${GlobalPaths.event}?include_sync=false`)
+      expect(yield* nextEvent(reader)).toMatchObject({ payload: { type: "server.connected" } })
+
+      GlobalBus.emit("event", { directory: "/repo", payload: { type: "sync", syncEvent: { id: "evt_sync" } } })
+      GlobalBus.emit("event", { directory: "/repo", payload: { type: "custom.event", properties: {} } })
+      expect(yield* nextEvent(reader)).toMatchObject({ directory: "/repo", payload: { type: "custom.event" } })
+      yield* Fiber.interrupt(fiber)
     }),
   )
 })

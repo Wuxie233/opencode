@@ -159,3 +159,9 @@ const table = sqliteTable("session", {
 - Keep delivery vocabulary explicit. Prompts steer by default and promote at the next safe provider-turn boundary while the current drain requires continuation. An explicit `queue` input remains pending until the Session would otherwise become idle; promote one queued input at that boundary, then reevaluate continuation before promoting another. Promoting any new user input resets the selected agent's provider-turn allowance; a batch of steers resets it once.
 - Keep EventV2 replay owner claims separate from clustered Session execution ownership.
 - Keep the System Context algebra, registry, and built-ins in `src/system-context`; keep Context Source producers with their observed domains, and keep Session History selection plus Context Epoch persistence Session-owned.
+
+## Instance And Event Lifetime
+
+- Use `InstanceStore.acquire(...)` or `InstanceStore.with(...)` for work that depends on directory-scoped state. HTTP streams hold their lease until the body finishes or the client disconnects; background work started by a request must acquire its own lease before the request returns.
+- Idle directory instances are evicted after 15 minutes without leases. Explicit one-shot CLI boundaries still dispose immediately after their command completes.
+- Keep `/global/event` backward compatible with `include_sync=true` by default. Web clients must request `include_sync=false`; workspace replication is the consumer that explicitly requests sync envelopes.

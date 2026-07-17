@@ -7,6 +7,7 @@ import "@/server/event"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { described } from "./metadata"
+import { QueryBoolean } from "./query"
 
 const GlobalHealth = Schema.Struct({
   healthy: Schema.Literal(true),
@@ -51,6 +52,10 @@ export const GlobalUpgradeInput = Schema.Struct({
   target: Schema.optional(Schema.String),
 })
 
+export const GlobalEventQuery = Schema.Struct({
+  include_sync: Schema.optional(QueryBoolean),
+})
+
 const GlobalUpgradeResult = Schema.Union([
   Schema.Struct({
     success: Schema.Literal(true),
@@ -83,6 +88,7 @@ export const GlobalApi = HttpApi.make("global").add(
         }),
       ),
       HttpApiEndpoint.get("event", GlobalPaths.event, {
+        query: GlobalEventQuery,
         success: GlobalEventSchema,
       }).annotateMerge(
         OpenApi.annotations({

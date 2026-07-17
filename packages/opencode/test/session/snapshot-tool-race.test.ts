@@ -21,6 +21,7 @@ import { SessionPrompt } from "../../src/session/prompt"
 import { SessionSummary } from "../../src/session/summary"
 import { MessageV2 } from "../../src/session/message-v2"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { MessageID } from "@/session/schema"
 import { Database } from "@opencode-ai/core/database/database"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { provideTmpdirServer } from "../fixture/fixture"
@@ -122,6 +123,16 @@ const providerCfg = (url: string) => ({
     },
   },
 })
+
+it.instance("returns an empty diff when the session exists but the message does not", () =>
+  Effect.gen(function* () {
+    const sessions = yield* Session.Service
+    const summary = yield* SessionSummary.Service
+    const session = yield* sessions.create({})
+
+    expect(yield* summary.diff({ sessionID: session.id, messageID: MessageID.ascending() })).toEqual([])
+  }),
+)
 
 it.live("tool execution produces non-empty session diff (snapshot race)", () =>
   provideTmpdirServer(

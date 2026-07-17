@@ -2,7 +2,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { GlobalBus } from "@/bus/global"
 import { EventV2 } from "@opencode-ai/core/event"
-import { Effect, Queue } from "effect"
+import { Cause, Effect, Queue } from "effect"
 import * as Stream from "effect/Stream"
 import { HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -22,21 +22,25 @@ function eventID() {
   return EventV2.ID.create()
 }
 
+const subscriberCapacity = 256
+
 function eventResponse(events: EventV2.Interface) {
   return Effect.gen(function* () {
     const instance = yield* InstanceState.context
     const workspaceID = yield* InstanceState.workspaceID
     // Listener registration is eager, so events published after this point cannot
     // be lost while the HTTP body fiber is starting or emitting server.connected.
-    const queue = yield* Queue.unbounded<EventV2.Payload>()
-    const unsubscribe = yield* events.listen((event) => Effect.sync(() => Queue.offerUnsafe(queue, event)))
-    yield* Effect.addFinalizer(() => unsubscribe)
+    const queue = yield* Queue.dropping<EventV2.Payload, EventV2.SubscriberOverflowError>(subscriberCapacity)
+    const unsubscribe = yield* events.listen((event) =>
+      Effect.sync(() => {
+        if (event.location?.directory !== instance.directory) return
+        if (event.location.workspaceID !== undefined && event.location.workspaceID !== workspaceID) return
+        if (Queue.offerUnsafe(queue, event)) return
+        Queue.failCauseUnsafe(queue, Cause.fail(new EventV2.SubscriberOverflowError({ capacity: subscriberCapacity })))
+      }),
+    )
+    yield* Effect.addFinalizer(() => unsubscribe.pipe(Effect.andThen(Queue.shutdown(queue)), Effect.asVoid))
     const stream = Stream.fromQueue(queue).pipe(
-      Stream.filter(
-        (event) =>
-          event.location?.directory === instance.directory &&
-          (event.location.workspaceID === undefined || event.location.workspaceID === workspaceID),
-      ),
       Stream.map((event) => ({ id: event.id, type: event.type, properties: event.data })),
     )
     const disposed = Stream.callback<{ id: string; type: string; properties: unknown }>((queue) => {

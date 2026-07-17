@@ -4,7 +4,8 @@ import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
-import { Cause, Config, Effect, Exit, Layer } from "effect"
+import { Cause, Config, Effect, Exit, Fiber, Layer } from "effect"
+import { TestClock } from "effect/testing"
 import { HttpClient, HttpClientRequest, HttpClientResponse, HttpRouter, HttpServer } from "effect/unstable/http"
 import { layerWebSocketConstructorGlobal } from "effect/unstable/socket/Socket"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -15,6 +16,7 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { registerAdapter } from "../../src/control-plane/adapters"
 import type { WorkspaceAdapter } from "../../src/control-plane/types"
 import { Workspace } from "../../src/control-plane/workspace"
+import { registerDisposer } from "../../src/effect/instance-registry"
 
 import { InstanceBootstrap as InstanceBootstrapService } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
@@ -37,6 +39,7 @@ import { disposeAllInstances, provideInstanceEffect, TestInstance, tmpdirScoped 
 import { TestLLMServer } from "../lib/llm-server"
 import { testProviderConfig } from "../lib/test-provider"
 import { pollWithTimeout, testEffect } from "../lib/effect"
+import { waitGlobalBusEvent } from "./global-bus"
 
 const originalWorkspaces = Flag.OPENCODE_EXPERIMENTAL_WORKSPACES
 const noopBootstrapLayer = Layer.succeed(
@@ -424,6 +427,57 @@ describe("session HttpApi", () => {
         cwd: sessionDirectory,
         root: sessionDirectory,
       })
+    }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
+  )
+
+  it.effect("keeps prompt_async leased until the background prompt completes", () =>
+    Effect.gen(function* () {
+      const llm = yield* TestLLMServer
+      const store = yield* InstanceStore.Service
+      const gate = Promise.withResolvers<void>()
+      const disposed: string[] = []
+      yield* llm.hold("ok", gate.promise)
+
+      const directory = yield* tmpdirScoped({
+        git: true,
+        config: testProviderConfig(llm.url),
+      })
+      const unregister = registerDisposer(async (current) => {
+        if (current === directory) disposed.push(current)
+      })
+      yield* Effect.addFinalizer(() => Effect.sync(unregister))
+      const session = yield* createSession({ title: "Pinned" }).pipe(provideInstanceEffect(directory))
+      const response = yield* request(pathFor(SessionPaths.promptAsync, { sessionID: session.id }), {
+        method: "POST",
+        headers: { "x-opencode-directory": directory, "content-type": "application/json" },
+        body: JSON.stringify({
+          agent: "build",
+          model: { providerID: "test", modelID: "test-model" },
+          parts: [{ type: "text", text: "wait for completion" }],
+        }),
+      })
+
+      expect(response.status).toBe(204)
+      yield* llm.wait(1)
+      yield* TestClock.adjust("30 minutes")
+      expect(disposed).toEqual([])
+
+      const idle = yield* waitGlobalBusEvent({
+        predicate: (event) =>
+          event.directory === directory &&
+          event.payload.type === "session.idle" &&
+          event.payload.properties.sessionID === session.id,
+      }).pipe(Effect.forkScoped)
+      gate.resolve()
+      yield* Fiber.join(idle)
+      yield* Effect.yieldNow
+      const released = yield* store.acquire({ directory })
+      yield* released.release
+
+      yield* TestClock.adjust(899_000)
+      expect(disposed).toEqual([])
+      yield* TestClock.adjust("1 second")
+      expect(disposed).toEqual([directory])
     }).pipe(Effect.provide(TestLLMServer.layer), Effect.provide(AppNodeBuilder.build(CrossSpawnSpawner.node))),
   )
 

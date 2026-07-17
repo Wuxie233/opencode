@@ -185,8 +185,10 @@ const layer = Layer.effect(
       url: URL | string,
       headers: HeadersInit | undefined,
     ) {
+      const eventURL = route(url, "/global/event")
+      eventURL.searchParams.set("include_sync", "true")
       const response = yield* http.execute(
-        HttpClientRequest.get(route(url, "/global/event"), {
+        HttpClientRequest.get(eventURL, {
           headers: new Headers(headers),
           accept: "text/event-stream",
         }),

@@ -84,13 +84,14 @@ export const effectCmd = <Args, A>(opts: EffectCmdOpts<Args, A>) =>
       const { InstanceStore } = await import("@/project/instance-store")
       const { InstanceRef } = await import("@/effect/instance-ref")
       const directory = opts.directory?.(args) ?? process.cwd()
-      const { store, ctx } = await AppRuntime.runPromise(
-        InstanceStore.Service.use((store) => store.load({ directory }).pipe(Effect.map((ctx) => ({ store, ctx })))),
+      await AppRuntime.runPromise(
+        InstanceStore.Service.use((store) =>
+          Effect.acquireUseRelease(
+            store.acquire({ directory }),
+            (lease) => opts.handler(args).pipe(Effect.provideService(InstanceRef, lease.context)),
+            (lease) => lease.release.pipe(Effect.andThen(store.dispose(lease.context))),
+          ),
+        ),
       )
-      try {
-        await AppRuntime.runPromise(opts.handler(args).pipe(Effect.provideService(InstanceRef, ctx)))
-      } finally {
-        await AppRuntime.runPromise(store.dispose(ctx))
-      }
     },
   })

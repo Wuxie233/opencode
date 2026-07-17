@@ -8,5 +8,5 @@ export function registerDisposer(disposer: (directory: string) => Promise<void>)
 }
 
 export async function disposeInstance(directory: string) {
-  await Promise.allSettled([...disposers].map((disposer) => disposer(directory)))
+  await Promise.allSettled([...disposers].map((disposer) => Promise.resolve().then(() => disposer(directory))))
 }

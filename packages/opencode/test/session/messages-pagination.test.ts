@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
-import { Effect, Option } from "effect"
+import { Effect, Option, Tracer } from "effect"
 import { Session as SessionNs } from "@/session/session"
 import { MessageV2 } from "../../src/session/message-v2"
 import { MessageID, PartID, type SessionID } from "../../src/session/schema"
@@ -448,6 +448,37 @@ describe("MessageV2.parts", () => {
         const result = yield* MessageV2.parts(id)
         expect(result[0].sessionID).toBe(sessionID)
         expect(result[0].messageID).toBe(id)
+      }),
+    ),
+  )
+})
+
+describe("MessageV2.turn", () => {
+  it.instance("stops after the page containing the target user and keeps all assistant retries", () =>
+    withSession(({ sessionID }) =>
+      Effect.gen(function* () {
+        yield* fill(sessionID, 120, (i: number) => 1000 + i)
+        const user = yield* addUser(sessionID, "target")
+        const first = yield* addAssistant(sessionID, user)
+        const second = yield* addAssistant(sessionID, user)
+        yield* fill(sessionID, 10)
+        const spans: Tracer.NativeSpan[] = []
+
+        const result = yield* MessageV2.turn({ sessionID, messageID: user }).pipe(
+          Effect.provideService(
+            Tracer.Tracer,
+            Tracer.make({
+              span(options) {
+                const span = new Tracer.NativeSpan(options)
+                spans.push(span)
+                return span
+              },
+            }),
+          ),
+        )
+
+        expect(result.map((item) => item.info.id)).toEqual([user, first, second])
+        expect(spans.filter((span) => span.name === "MessageV2.page")).toHaveLength(1)
       }),
     ),
   )

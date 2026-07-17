@@ -1,7 +1,9 @@
 import { InstanceRef, WorkspaceRef } from "@/effect/instance-ref"
+import { EffectBridge } from "@/effect/bridge"
 import { InstanceStore } from "@/project/instance-store"
-import { Effect, Layer } from "effect"
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import { IncomingMessage } from "node:http"
+import { Effect, Exit, Layer, Stream } from "effect"
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import { WorkspaceRouteContext } from "./workspace-routing"
 
@@ -23,13 +25,49 @@ function decode(input: string): string {
 function provideInstanceContext<E>(
   effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E>,
   store: InstanceStore.Interface,
-): Effect.Effect<HttpServerResponse.HttpServerResponse, E, WorkspaceRouteContext> {
+): Effect.Effect<
+  HttpServerResponse.HttpServerResponse,
+  E,
+  WorkspaceRouteContext | HttpServerRequest.HttpServerRequest
+> {
   return Effect.gen(function* () {
     const route = yield* WorkspaceRouteContext
-    const ctx = yield* store.load({ directory: decode(route.directory) })
-    return yield* effect.pipe(
-      Effect.provideService(InstanceRef, ctx),
+    const lease = yield* store.acquire({ directory: decode(route.directory) })
+    const response = yield* effect.pipe(
+      Effect.provideService(InstanceRef, lease.context),
       Effect.provideService(WorkspaceRef, route.workspaceID),
+      Effect.onExit((exit) => (Exit.isFailure(exit) ? lease.release : Effect.void)),
+    )
+    if (response.body._tag !== "Stream") {
+      yield* lease.release
+      return response
+    }
+    const request = yield* HttpServerRequest.HttpServerRequest
+    if (request.source instanceof IncomingMessage) {
+      const incoming = request.source
+      const bridge = yield* EffectBridge.make()
+      const onSocketClose = () => bridge.fork(lease.release)
+      incoming.socket.once("close", onSocketClose)
+      return HttpServerResponse.setBody(
+        response,
+        HttpBody.stream(
+          response.body.stream.pipe(
+            Stream.ensuring(
+              Effect.sync(() => incoming.socket.off("close", onSocketClose)).pipe(Effect.andThen(lease.release)),
+            ),
+          ),
+          response.body.contentType,
+          response.body.contentLength,
+        ),
+      )
+    }
+    return HttpServerResponse.setBody(
+      response,
+      HttpBody.stream(
+        response.body.stream.pipe(Stream.ensuring(lease.release)),
+        response.body.contentType,
+        response.body.contentLength,
+      ),
     )
   })
 }
