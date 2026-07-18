@@ -34,7 +34,6 @@ import createPresence from "solid-presence"
 import { useLocal } from "@/context/local"
 import { createPromptModelSelection } from "@/pages/session/composer/prompt-model-selection"
 
-const workspaceBarEnabled = import.meta.env.VITE_OPENCODE_CHANNEL !== "prod"
 const providerTipDismissalDuration = 30 * 24 * 60 * 60 * 1000
 const providerTipExitDuration = 250
 
@@ -88,7 +87,7 @@ export default function NewSessionPage() {
   const [store, setStore] = createStore<{ worktree?: string }>({})
   const rightMount = useTitlebarRightMount()
 
-  const showWorkspaceBar = createMemo(() => workspaceBarEnabled && sync().project?.vcs === "git")
+  const showWorkspaceBar = createMemo(() => sync().project?.vcs === "git")
   const newSessionWorktree = createMemo(() => {
     if (!showWorkspaceBar()) return "main"
     if (store.worktree) return store.worktree
