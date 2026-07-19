@@ -1082,6 +1082,12 @@ const layer = Layer.effect(
       return parts.some((part) => part.type === "text" && part.text.trim())
     }
 
+    function hasAssistantOutput(parts: SessionV1.Part[]) {
+      return parts.some(
+        (part) => (part.type === "text" && part.text.trim()) || part.type === "tool",
+      )
+    }
+
     function hasUnhandledToolCalls(parts: SessionV1.Part[]) {
       return parts.some(
         (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
@@ -1104,6 +1110,7 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
+        let emptyOutputs = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1312,6 +1319,25 @@ const layer = Layer.effect(
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 
+            if (result === "continue" && !handle.message.error) {
+              const completed = yield* sessions.getMessage({ sessionID, messageID: handle.message.id }).pipe(Effect.orDie)
+              if (!hasAssistantOutput(completed.parts)) {
+                emptyOutputs++
+                if (emptyOutputs < 3) {
+                  yield* sessions.removeMessage({ sessionID, messageID: handle.message.id })
+                  return "continue" as const
+                }
+                handle.message.error = new SessionV1.APIError({
+                  message: "Provider returned an empty response",
+                  isRetryable: false,
+                }).toObject()
+                yield* sessions.updateMessage(handle.message)
+                yield* events.publish(Session.Event.Error, { sessionID, error: handle.message.error })
+                return "break" as const
+              }
+              emptyOutputs = 0
+            }
+
             if (structured !== undefined) {
               handle.message.structured = structured
               handle.message.finish = handle.message.finish ?? "stop"
@@ -1362,6 +1388,7 @@ const layer = Layer.effect(
           continue
         }
 
+        yield* sessions.touch(sessionID)
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
       },

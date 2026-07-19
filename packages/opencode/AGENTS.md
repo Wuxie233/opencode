@@ -5,6 +5,11 @@
 - **Schema**: Drizzle schema lives in `packages/core/src/**/*.sql.ts`.
 - **Migrations**: database migrations live in `packages/core` and are applied by core.
 
+## Session lifecycle
+
+- A provider turn that returns cleanly with `continue` but produces no text or tool part is an empty response, including `finish: "unknown"` and reasoning-only turns. `SessionPrompt.run` retries at most three consecutive empty turns, removes interim empty assistant rows, and persists a non-retryable `APIError` on the final row.
+- Touch the Session once when the prompt loop reaches a terminal result. Message/part and transient `session.status` events alone do not update directory session lists; the resulting `session.updated` event keeps unopened background sessions fresh in web/mobile sidebars.
+
 ## Development server
 
 - Running `bun dev` from `packages/opencode` starts the live interactive TUI. Do not run it as a blocking foreground command when you need to inspect the result.

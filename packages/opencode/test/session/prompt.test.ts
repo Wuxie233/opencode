@@ -647,6 +647,115 @@ it.instance("loop does not treat empty stop assistant as duplicate terminal assi
   }),
 )
 
+it.instance("bounds consecutive empty assistant responses", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Empty response" })
+
+    yield* llm.text("")
+    yield* llm.text("")
+    yield* llm.text("")
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      parts: [{ type: "text", text: "hello" }],
+    })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const assistants = messages.filter((message) => message.info.role === "assistant")
+
+    expect(yield* llm.calls).toBe(3)
+    expect(assistants).toHaveLength(1)
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.error).toEqual({
+        name: "APIError",
+        data: { message: "Provider returned an empty response", isRetryable: false },
+      })
+      expect(result.info.time.completed).toBeNumber()
+    }
+  }),
+)
+
+it.instance("treats reasoning-only stops as empty responses", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Reasoning-only response" })
+
+    yield* llm.reason("private reasoning")
+    yield* llm.reason("private reasoning")
+    yield* llm.text("final answer")
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      parts: [{ type: "text", text: "hello" }],
+    })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+
+    expect(yield* llm.calls).toBe(3)
+    expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(1)
+    expect(result.parts.some((part) => part.type === "text" && part.text === "final answer")).toBe(true)
+  }),
+)
+
+it.instance("retries clean unknown finishes without visible output", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Unknown empty response" })
+
+    yield* llm.push(reply().unknown())
+    yield* llm.push(reply().unknown())
+    yield* llm.text("recovered")
+
+    const result = yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      parts: [{ type: "text", text: "hello" }],
+    })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+
+    expect(yield* llm.calls).toBe(3)
+    expect(messages.filter((message) => message.info.role === "assistant")).toHaveLength(1)
+    expect(result.parts.some((part) => part.type === "text" && part.text === "recovered")).toBe(true)
+  }),
+)
+
+it.instance("touches the session when background generation completes", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const events = yield* EventV2Bridge.Service
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Background completion" })
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "hello" }],
+    })
+    let updated = 0
+    const off = yield* events.listen((event) => {
+      if (event.type !== Session.Event.Updated.type) return Effect.void
+      const data = event.data as typeof Session.Event.Updated.data.Type
+      if (data.sessionID === chat.id) updated++
+      return Effect.void
+    })
+    yield* llm.text("done")
+
+    yield* prompt.loop({ sessionID: chat.id })
+    yield* off
+
+    expect(updated).toBe(1)
+  }),
+)
+
 it.instance("loop avoids final assistant prefill for claude-opus-4-8", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig((url) => ({
