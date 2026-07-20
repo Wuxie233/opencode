@@ -2,7 +2,7 @@ import { expect } from "bun:test"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { $ } from "bun"
-import { Context, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Context, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import {
   disposeAllInstancesEffect,
@@ -313,6 +313,55 @@ it.live("InstanceState dedupes concurrent lookups", () =>
 
     const [a, b] = yield* Effect.all([access(state, dir), access(state, dir)], { concurrency: "unbounded" })
     expect(a).toBe(b)
+    expect(n).toBe(1)
+  }),
+)
+
+it.live("InstanceState retries after an interrupted lookup", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    const started = yield* Deferred.make<void>()
+    const resume = yield* Deferred.make<void>()
+    let n = 0
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        n += 1
+        yield* Deferred.succeed(started, undefined)
+        yield* Deferred.await(resume)
+        return { n }
+      }),
+    )
+
+    const first = yield* access(state, dir).pipe(Effect.forkScoped)
+    yield* Deferred.await(started)
+    yield* Fiber.interrupt(first)
+    const interrupted = yield* Fiber.await(first)
+
+    expect(Exit.isFailure(interrupted) && Cause.hasInterruptsOnly(interrupted.cause)).toBe(true)
+
+    yield* Deferred.succeed(resume, undefined)
+    const second = yield* access(state, dir)
+
+    expect(second).toEqual({ n: 2 })
+  }),
+)
+
+it.live("InstanceState caches ordinary lookup failures", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    let n = 0
+    const state = yield* InstanceState.make(() =>
+      Effect.gen(function* () {
+        n += 1
+        return yield* Effect.fail("unavailable")
+      }),
+    )
+
+    const first = yield* access(state, dir).pipe(Effect.flip)
+    const second = yield* access(state, dir).pipe(Effect.flip)
+
+    expect(first).toBe("unavailable")
+    expect(second).toBe("unavailable")
     expect(n).toBe(1)
   }),
 )
