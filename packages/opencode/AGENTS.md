@@ -100,6 +100,7 @@ See `specs/effect/migration.md` for the compact pattern reference and examples.
 
 - Use `makeRuntime` (from `src/effect/run-service.ts`) for all services. It returns `{ runPromise, runFork, runCallback }` backed by a shared `memoMap` that deduplicates layers.
 - Use `InstanceState` (from `src/effect/instance-state.ts`) for per-directory or per-project state that needs per-instance cleanup. It uses `ScopedCache` keyed by directory — each open project gets its own state, automatically cleaned up on disposal.
+- Keep interrupted `InstanceState` lookups immediately retryable. A cancelled first lookup must not leave a cached interruption that poisons every later caller for the same directory.
 - If two open directories should not share one copy of the service, it needs `InstanceState`.
 - Do the work directly in the `InstanceState.make` closure — `ScopedCache` handles run-once semantics. Don't add fibers, `ensure()` callbacks, or `started` flags on top.
 - Use `Effect.addFinalizer` or `Effect.acquireRelease` inside the `InstanceState.make` closure for cleanup (subscriptions, process teardown, etc.).
