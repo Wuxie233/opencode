@@ -29,6 +29,7 @@ import { Usage, type LLMEvent } from "@opencode-ai/llm"
 import { ProviderError } from "@/provider/error"
 
 const DOOM_LOOP_THRESHOLD = 3
+const EMPTY_RESPONSE_RETRY_LIMIT = 6
 export type Result = "compact" | "stop" | "continue"
 
 export interface Handle {
@@ -642,9 +643,12 @@ const layer = Layer.effect(
         })
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
+        let emptyResponseAttempts = 0
+        let lastAttemptWasEmpty = false
 
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
+            lastAttemptWasEmpty = false
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             attemptVisible = false
@@ -661,6 +665,8 @@ const layer = Layer.effect(
               Stream.runDrain,
             )
             if (!attemptVisible && !ctx.needsCompaction) {
+              emptyResponseAttempts++
+              lastAttemptWasEmpty = true
               return yield* Effect.fail(new ProviderError.ResponseStreamError("Provider returned an empty response"))
             }
           }).pipe(
@@ -672,7 +678,10 @@ const layer = Layer.effect(
               SessionRetry.policy({
                 provider: input.model.providerID,
                 parse,
-                allow: () => !attemptVisible,
+                allow: () => {
+                  if (!lastAttemptWasEmpty) emptyResponseAttempts = 0
+                  return !attemptVisible && (!lastAttemptWasEmpty || emptyResponseAttempts < EMPTY_RESPONSE_RETRY_LIMIT)
+                },
                 wait: (info) => retry.wait({ sessionID: ctx.sessionID, ...info }),
                 set: (info) => {
                   return status.set(ctx.sessionID, {
