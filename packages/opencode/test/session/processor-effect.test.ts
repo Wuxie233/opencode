@@ -261,6 +261,21 @@ const emptySuccessRetry = retryGateEnv(
     LLMEvent.finish({ reason: "stop" }),
   ),
 )
+let persistentEmptyCalls = 0
+const persistentEmptyLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () => {
+      persistentEmptyCalls++
+      return Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+        LLMEvent.finish({ reason: "stop" }),
+      )
+    },
+  }),
+)
+const persistentEmptySuccess = testEffect(LayerNode.compile(root, [...replacements, [LLM.node, persistentEmptyLLM]]))
 const partialTextNoRetry = retryGateEnv(
   Stream.concat(
     Stream.make(
@@ -324,6 +339,52 @@ function processOnce(text: string) {
           messages: [{ role: "user", content: text }],
           tools: {},
         })
+        return { result, handle, parts: yield* MessageV2.parts(msg.id) }
+      }),
+    { config: cfg },
+  )
+}
+
+function processOnceWakingRetries(text: string, retries: number) {
+  return provideTmpdirInstance(
+    (dir) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+        const retry = yield* SessionRetryControl.Service
+        const status = yield* SessionStatus.Service
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, text)
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({ assistantMessage: msg, sessionID: chat.id, model: mdl })
+        const run = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: text }],
+          tools: {},
+        }).pipe(Effect.forkChild)
+
+        for (let attempt = 1; attempt <= retries; attempt++) {
+          yield* waitFor(
+            status.get(chat.id).pipe(
+              Effect.map((value) => value.type === "retry" && value.attempt === attempt ? value : undefined),
+            ),
+            `timed out waiting for retry attempt ${attempt}`,
+          )
+          expect(yield* retry.wake(chat.id)).toBe(true)
+        }
+
+        const result = yield* Fiber.join(run)
         return { result, handle, parts: yield* MessageV2.parts(msg.id) }
       }),
     { config: cfg },
@@ -1351,6 +1412,19 @@ emptySuccessRetry.it.live("session.processor retries a successful empty response
     expect(emptySuccessRetry.calls()).toBe(2)
     expect(result.handle.message.error).toBeUndefined()
     expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "recovered" })]))
+  }),
+)
+
+persistentEmptySuccess.live("session.processor stops after repeated successful empty responses", () =>
+  Effect.gen(function* () {
+    persistentEmptyCalls = 0
+    const result = yield* processOnceWakingRetries("bound repeated empty success", 5)
+
+    expect(result.result).toBe("stop")
+    expect(persistentEmptyCalls).toBe(6)
+    expect(result.handle.message.error?.name).toBe("APIError")
+    const errorData = result.handle.message.error?.data
+    expect(errorData && "message" in errorData ? errorData.message : "").toContain("empty response")
   }),
 )
 
