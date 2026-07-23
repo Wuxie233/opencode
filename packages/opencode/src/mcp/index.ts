@@ -125,7 +125,7 @@ function remoteURL(value: string) {
 }
 
 function requestInit(headers: Record<string, string> | undefined, directory: string) {
-  return { headers: { ...headers, "x-opencode-directory": directory } }
+  return { headers: { ...headers, "x-opencode-directory": encodeURIComponent(directory) } }
 }
 
 interface CreateResult {

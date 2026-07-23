@@ -1,4 +1,6 @@
 import { describe, expect } from "bun:test"
+import fs from "fs/promises"
+import path from "path"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
 import { ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
@@ -6,7 +8,7 @@ import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect } from "effect"
 import { testEffect } from "../lib/effect"
 import { MCP } from "../../src/mcp/index"
-import { TestInstance } from "../fixture/fixture"
+import { provideInstanceEffect, TestInstance } from "../fixture/fixture"
 
 const it = testEffect(LayerNode.compile(MCP.node))
 
@@ -59,7 +61,7 @@ describe("mcp.headers", () => {
       for (const headers of server.requests) {
         expect(headers.get("authorization")).toBe("Bearer test-token")
         expect(headers.get("x-custom-header")).toBe("custom-value")
-        expect(headers.get("x-opencode-directory")).toBe(test.directory)
+        expect(headers.get("x-opencode-directory")).toBe(encodeURIComponent(test.directory))
       }
     }),
   )
@@ -82,7 +84,7 @@ describe("mcp.headers", () => {
       expect(server.requests.length).toBeGreaterThan(0)
       for (const headers of server.requests) {
         expect(headers.get("authorization")).toBe("Bearer test-token")
-        expect(headers.get("x-opencode-directory")).toBe(test.directory)
+        expect(headers.get("x-opencode-directory")).toBe(encodeURIComponent(test.directory))
       }
     }),
   )
@@ -102,7 +104,37 @@ describe("mcp.headers", () => {
       for (const headers of server.requests) {
         expect(headers.has("authorization")).toBe(false)
         expect(headers.has("x-custom-header")).toBe(false)
-        expect(headers.get("x-opencode-directory")).toBe(test.directory)
+        expect(headers.get("x-opencode-directory")).toBe(encodeURIComponent(test.directory))
+      }
+    }),
+  )
+
+  it.instance("directory is encoded once into an ASCII-safe header", () =>
+    Effect.gen(function* () {
+      const server = yield* serve
+      const mcp = yield* MCP.Service
+      const test = yield* TestInstance
+      const directory = path.join(test.directory, "中文项目 %2F")
+      yield* Effect.promise(() => fs.mkdir(directory))
+
+      const result = yield* mcp
+        .add("test-server-unicode-directory", {
+          type: "remote",
+          url: server.url,
+          oauth: false,
+          headers: {
+            "x-opencode-directory": "/wrong/directory",
+          },
+        })
+        .pipe(provideInstanceEffect(directory))
+
+      expect(result.status).toMatchObject({ "test-server-unicode-directory": { status: "connected" } })
+      expect(server.requests.length).toBeGreaterThan(0)
+      for (const headers of server.requests) {
+        const value = headers.get("x-opencode-directory")
+        expect(value).toBe(encodeURIComponent(directory))
+        expect(value).toMatch(/^[\x20-\x7E]+$/)
+        expect(decodeURIComponent(value!)).toBe(directory)
       }
     }),
   )
