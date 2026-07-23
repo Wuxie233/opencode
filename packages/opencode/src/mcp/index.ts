@@ -124,6 +124,10 @@ function remoteURL(value: string) {
   if (URL.canParse(value)) return new URL(value)
 }
 
+function requestInit(headers: Record<string, string> | undefined, directory: string) {
+  return { headers: { ...headers, "x-opencode-directory": encodeURIComponent(directory) } }
+}
+
 interface CreateResult {
   mcpClient?: MCPClient
   status: Status
@@ -265,20 +269,21 @@ const layer = Layer.effect(
           auth,
         )
       }
+      const directory = yield* InstanceState.directory
 
       const transports: Array<{ name: string; transport: TransportWithAuth }> = [
         {
           name: "StreamableHTTP",
           transport: new StreamableHTTPClientTransport(url, {
             authProvider,
-            requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+            requestInit: requestInit(mcp.headers, directory),
           }),
         },
         {
           name: "SSE",
           transport: new SSEClientTransport(url, {
             authProvider,
-            requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+            requestInit: requestInit(mcp.headers, directory),
           }),
         },
       ]
@@ -843,11 +848,11 @@ const layer = Layer.effect(
         auth,
       )
 
+      const directory = yield* InstanceState.directory
       const transport = new StreamableHTTPClientTransport(url, {
         authProvider,
-        requestInit: mcpConfig.headers ? { headers: mcpConfig.headers } : undefined,
+        requestInit: requestInit(mcpConfig.headers, directory),
       })
-      const directory = yield* InstanceState.directory
 
       return yield* Effect.tryPromise({
         try: () => {
