@@ -8,6 +8,7 @@ import {
   isContextOverflowFailure,
   type ProviderErrorEvent,
 } from "@opencode-ai/llm"
+import { RequestExecutor } from "@opencode-ai/llm/route"
 import { Cause, DateTime, Effect, FiberSet, Layer, Option, Semaphore, Stream } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
@@ -26,6 +27,7 @@ import { ToolRegistry } from "../../tool/registry"
 import { ToolOutputStore } from "../../tool-output-store"
 import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
+import { SessionCanonicalWindow } from "../canonical-window"
 import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
 import { SessionInput } from "../input"
@@ -38,7 +40,7 @@ import { toLLMMessages } from "./to-llm-message"
 import { MAX_STEPS_PROMPT } from "./max-steps"
 import { Snapshot } from "../../snapshot"
 import { makeLocationNode } from "../../effect/app-node"
-import { llmClient } from "../../effect/app-node-platform"
+import { llmClient, requestExecutor } from "../../effect/app-node-platform"
 
 /**
  * Runs one durable coding-agent Session until it settles.
@@ -106,7 +108,8 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
-    const compaction = SessionCompaction.make({ events, llm, config: yield* config.entries() })
+    const executor = yield* RequestExecutor.Service
+    const compaction = SessionCompaction.make({ events, llm, executor, db, config: yield* config.entries() })
     const getSession = Effect.fn("SessionRunner.getSession")(function* (sessionID: SessionSchema.ID) {
       const session = yield* store.get(sessionID)
       if (!session) return yield* Effect.die(`Session not found: ${sessionID}`)
@@ -198,13 +201,33 @@ const layer = Layer.effect(
         initialized ?? (yield* SessionContextEpoch.prepare(db, events, loadSystemContext(agent), session.id))
       const model = yield* models.resolve(session)
       const entries = yield* SessionHistory.entriesForRunner(db, session.id, system.baselineSeq)
-      const context = entries.map((entry) => entry.message)
+      const canonical = yield* SessionCanonicalWindow.load(db, {
+        sessionID: session.id,
+        providerID: model.provider,
+        modelID: model.id,
+        routeID: model.route.id,
+        variant: session.model?.variant,
+      }).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const usableCanonical =
+        canonical &&
+        !entries.some((entry) => entry.seq > canonical.sourceSeq && entry.message.type === "compaction") &&
+        (entries.at(-1)?.seq ?? canonical.sourceSeq) >= canonical.sourceSeq
+          ? canonical
+          : undefined
+      const context = entries
+        .filter((entry) => usableCanonical === undefined || entry.seq > usableCanonical.sourceSeq)
+        .map((entry) => entry.message)
       const isLastStep = agent.info?.steps !== undefined && currentStep >= agent.info.steps
       const toolMaterialization = isLastStep ? undefined : yield* tools.materialize(agent.info?.permissions)
       const promptCacheKey = /^ses_[0-9a-f]{64}$/.test(session.id) ? session.id.slice(4) : session.id
       const request = LLM.request({
         model,
-        providerOptions: { openai: { promptCacheKey } },
+        providerOptions: {
+          openai: {
+            promptCacheKey,
+            ...(usableCanonical === undefined ? {} : { canonicalInput: usableCanonical.items }),
+          },
+        },
         system: [agent.info?.system, system.baseline]
           .filter((part): part is string => part !== undefined && part.length > 0)
           .map(SystemPart.make),
@@ -212,7 +235,16 @@ const layer = Layer.effect(
         tools: toolMaterialization?.definitions ?? [],
         toolChoice: isLastStep ? "none" : undefined,
       })
-      if (yield* compaction.compactIfNeeded({ sessionID: session.id, entries, model, request }))
+      if (
+        yield* compaction.compactIfNeeded({
+          sessionID: session.id,
+          entries,
+          model,
+          request,
+          variant: session.model?.variant,
+          canonicalSourceSeq: usableCanonical?.sourceSeq,
+        })
+      )
         return yield* Effect.die(continueAfterCompaction(currentStep))
       const startSnapshot = yield* snapshots.capture()
       const publisher = createLLMEventPublisher(events, {
@@ -283,7 +315,16 @@ const layer = Layer.effect(
             recoverOverflow &&
             !publisher.hasAssistantStarted() &&
             isContextOverflowFailure(overflowFailure ?? failure) &&
-            (yield* restore(recoverOverflow({ sessionID: session.id, entries, model, request })))
+            (yield* restore(
+              recoverOverflow({
+                sessionID: session.id,
+                entries,
+                model,
+                request,
+                variant: session.model?.variant,
+                canonicalSourceSeq: usableCanonical?.sourceSeq,
+              }),
+            ))
           )
             return yield* Effect.die(continueAfterOverflowCompaction(currentStep))
           if (overflowFailure) yield* publish(overflowFailure)
@@ -417,6 +458,7 @@ export const node = makeLocationNode({
   deps: [
     EventV2.node,
     llmClient,
+    requestExecutor,
     AgentV2.node,
     ToolRegistry.node,
     SessionRunnerModel.node,

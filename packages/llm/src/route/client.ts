@@ -39,6 +39,7 @@ export interface Route<Body, Prepared = unknown> {
   readonly protocol: ProtocolID
   readonly endpoint: Endpoint<Body>
   readonly auth: AuthDef
+  readonly headers?: (input: { readonly request: LLMRequest }) => Record<string, string>
   readonly transport: Transport<Body, Prepared, unknown>
   readonly defaults: RouteDefaults
   readonly body: RouteBody<Body>
@@ -164,7 +165,7 @@ export interface GenerateMethod {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/LLMClient") {}
 
-const resolveRequestOptions = (request: LLMRequest) => {
+export const resolveRequestOptions = (request: LLMRequest) => {
   const routeDefaults = request.model.route.defaults
   const modelDefaults = request.model.defaults
   const generation = mergeGenerationOptions(routeDefaults.generation, modelDefaults?.generation, request.generation)
@@ -251,6 +252,7 @@ function makeFromTransport<Body, Prepared, Frame, Event, State>(
       protocol: protocol.id,
       endpoint: routeInput.endpoint,
       auth: routeInput.auth ?? Auth.none,
+      headers: routeInput.headers,
       transport: routeInput.transport,
       defaults: routeInput.defaults ?? {},
       body: protocol.body,

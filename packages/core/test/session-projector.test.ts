@@ -20,6 +20,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionInputTable, SessionMessageTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionCanonicalWindow } from "@opencode-ai/core/session/canonical-window"
 import { testEffect } from "./lib/effect"
 import { Snapshot } from "@opencode-ai/core/snapshot"
 
@@ -68,6 +69,13 @@ describe("SessionProjector", () => {
         .values([assistantRow(boundary, 1), assistantRow(SessionMessage.ID.make("msg_later"), 2)])
         .run()
       const events = yield* EventV2.Service
+      const canonicalKey = {
+        sessionID,
+        providerID: "provider",
+        modelID: "model",
+        routeID: "openai-responses",
+      }
+      yield* SessionCanonicalWindow.replace(db, { ...canonicalKey, sourceSeq: 1, items: [] })
       yield* events.publish(SessionEvent.RevertEvent.Staged, {
         sessionID,
         timestamp: DateTime.makeUnsafe(1),
@@ -93,6 +101,7 @@ describe("SessionProjector", () => {
       expect(
         (yield* db.select({ id: SessionMessageTable.id }).from(SessionMessageTable).all()).map((row) => row.id),
       ).toEqual([boundary])
+      expect(yield* SessionCanonicalWindow.load(db, canonicalKey)).toBeUndefined()
     }),
   )
 
@@ -230,6 +239,13 @@ describe("SessionProjector", () => {
         .run()
         .pipe(Effect.orDie)
       const events = yield* EventV2.Service
+      const canonicalKey = {
+        sessionID,
+        providerID: "provider",
+        modelID: "model",
+        routeID: "openai-responses",
+      }
+      yield* SessionCanonicalWindow.replace(db, { ...canonicalKey, sourceSeq: 1, items: [] })
 
       yield* events.publish(SessionEvent.AgentSwitched, {
         sessionID,
@@ -237,12 +253,15 @@ describe("SessionProjector", () => {
         timestamp: created,
         agent: "build",
       })
+      expect(yield* SessionCanonicalWindow.load(db, canonicalKey)).toBeUndefined()
+      yield* SessionCanonicalWindow.replace(db, { ...canonicalKey, sourceSeq: 2, items: [] })
       yield* events.publish(SessionEvent.ModelSwitched, {
         sessionID,
         messageID: SessionMessage.ID.create(),
         timestamp: created,
         model,
       })
+      expect(yield* SessionCanonicalWindow.load(db, canonicalKey)).toBeUndefined()
       yield* events.publish(SessionEvent.Synthetic, {
         sessionID,
         messageID: SessionMessage.ID.create(),

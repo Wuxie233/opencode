@@ -14,6 +14,7 @@ import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
 import { SessionContextEpoch } from "./context-epoch"
+import { SessionCanonicalWindow } from "./canonical-window"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
 
@@ -343,12 +344,16 @@ const layer = Layer.effectDiscard(
       }),
     )
     yield* events.project(SessionEvent.AgentSwitched, (event) =>
-      db
-        .update(SessionTable)
-        .set({ agent: event.data.agent, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie, Effect.andThen(run(db, event))),
+      Effect.gen(function* () {
+        yield* db
+          .update(SessionTable)
+          .set({ agent: event.data.agent, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+        yield* SessionCanonicalWindow.clear(db, event.data.sessionID).pipe(Effect.orDie)
+        yield* run(db, event)
+      }),
     )
     yield* events.project(SessionEvent.ModelSwitched, (event) =>
       Effect.gen(function* () {
@@ -358,6 +363,7 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
+        yield* SessionCanonicalWindow.clear(db, event.data.sessionID).pipe(Effect.orDie)
         yield* run(db, event)
       }),
     )
@@ -464,6 +470,7 @@ const layer = Layer.effectDiscard(
           .run()
           .pipe(Effect.orDie)
         yield* SessionContextEpoch.reset(db, event.data.sessionID)
+        yield* SessionCanonicalWindow.clear(db, event.data.sessionID).pipe(Effect.orDie)
       }),
     )
   }),

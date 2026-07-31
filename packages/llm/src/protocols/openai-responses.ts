@@ -65,6 +65,29 @@ const OpenAIResponsesItemReference = Schema.Struct({
   id: Schema.String,
 })
 
+const OpenAIResponsesCompactionItem = Schema.StructWithRest(
+  Schema.Struct({
+    type: Schema.Literals(["compaction", "compaction_summary"]),
+    id: Schema.optional(Schema.String),
+    encrypted_content: Schema.String,
+    created_by: Schema.optional(Schema.String),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+)
+
+const OpenAIResponsesCanonicalMessage = Schema.StructWithRest(
+  Schema.Struct({
+    type: Schema.tag("message"),
+    role: Schema.Literals(["user", "assistant", "system", "developer"]),
+    content: Schema.Array(Schema.Unknown),
+  }),
+  [Schema.Record(Schema.String, Schema.Unknown)],
+)
+
+const OpenAIResponsesCanonicalItem = Schema.StructWithRest(Schema.Struct({ type: Schema.String }), [
+  Schema.Record(Schema.String, Schema.Unknown),
+])
+
 // `function_call_output.output` accepts either a plain string or an ordered
 // array of content items so tools can return images in addition to text.
 // https://platform.openai.com/docs/api-reference/responses/object
@@ -94,6 +117,13 @@ const OpenAIResponsesInputItem = Schema.Union([
   }),
 ])
 type OpenAIResponsesInputItem = Schema.Schema.Type<typeof OpenAIResponsesInputItem>
+
+const OpenAIResponsesProviderInputItem = Schema.Union([
+  OpenAIResponsesInputItem,
+  OpenAIResponsesCompactionItem,
+  OpenAIResponsesCanonicalMessage,
+  OpenAIResponsesCanonicalItem,
+])
 
 // Mutable counterpart of the schema reasoning item so `lowerMessages` can fold
 // multiple streamed summary parts into the same item before flushing.
@@ -125,7 +155,7 @@ const OpenAIResponsesToolChoice = Schema.Union([
 // transports in sync without a destructure-and-strip dance.
 const OpenAIResponsesCoreFields = {
   model: Schema.String,
-  input: Schema.Array(OpenAIResponsesInputItem),
+  input: Schema.Array(OpenAIResponsesProviderInputItem),
   instructions: Schema.optional(Schema.String),
   tools: optionalArray(OpenAIResponsesTool),
   tool_choice: Schema.optional(OpenAIResponsesToolChoice),
@@ -479,9 +509,20 @@ const fromRequest = Effect.fn("OpenAIResponses.fromRequest")(function* (request:
   const generation = request.generation
   const options = yield* lowerOptions(request)
   const toolSchemaCompatibility = request.model.compatibility?.toolSchema
+  const canonical = OpenAIOptions.canonicalInput(request)
+  const lowered = yield* lowerMessages(request)
+  const input = canonical
+    ? [
+        ...lowered.filter((item) => "role" in item && item.role === "system"),
+        ...(yield* ProviderShared.validateWith(
+          Schema.decodeUnknownEffect(Schema.Array(OpenAIResponsesProviderInputItem)),
+        )(canonical)),
+        ...lowered.filter((item) => !("role" in item && item.role === "system")),
+      ]
+    : lowered
   return {
     model: request.model.id,
-    input: yield* lowerMessages(request),
+    input,
     tools:
       request.tools.length === 0
         ? undefined

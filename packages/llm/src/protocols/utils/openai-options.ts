@@ -90,4 +90,9 @@ export const instructions = (request: LLMRequest) => {
   return typeof value === "string" ? value : undefined
 }
 
+export const canonicalInput = (request: LLMRequest): ReadonlyArray<unknown> | undefined => {
+  const value = options(request)?.canonicalInput
+  return Array.isArray(value) ? value : undefined
+}
+
 export * as OpenAIOptions from "./openai-options"
