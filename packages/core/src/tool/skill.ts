@@ -3,6 +3,7 @@ export * as SkillTool from "./skill"
 import path from "path"
 import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
+import { AgentV2 } from "../agent"
 import { makeLocationNode } from "../effect/app-node"
 import { FSUtil } from "../fs-util"
 import { SkillV2 } from "../skill"
@@ -15,7 +16,9 @@ export const name = "skill"
 const FILE_LIMIT = 10
 
 export const Input = Schema.Struct({
-  name: Schema.String.annotate({ description: "The name of the skill from the available skills list" }),
+  name: Schema.String.annotate({
+    description: "The name of a skill from the root list, a routed child catalog, or an exact user request",
+  }),
 })
 
 export const Output = Schema.Struct({
@@ -25,14 +28,18 @@ export const Output = Schema.Struct({
 })
 
 export const description = [
-  "Load a specialized skill when the task at hand matches one of the available skills in the system context.",
+  "Load a specialized skill when the task at hand matches one of the available skills in the system context or a routed child catalog.",
   "",
   "Use this tool to inject the skill's instructions and resources into the current conversation. The output may contain detailed workflow guidance as well as references to scripts, files, etc. in the same directory as the skill.",
   "",
-  "The skill name must match one of the available skills in the system context.",
+  "The skill name must match a root skill, a routed child, or a skill name explicitly requested by the user.",
 ].join("\n")
 
-export const toModelOutput = (skill: SkillV2.Info, files: ReadonlyArray<string>) => {
+export const toModelOutput = (
+  skill: SkillV2.Info,
+  files: ReadonlyArray<string>,
+  children: ReadonlyArray<SkillV2.Info> = [],
+) => {
   const directory = path.dirname(skill.location)
   return [
     `<skill_content name="${skill.name}">`,
@@ -47,6 +54,19 @@ export const toModelOutput = (skill: SkillV2.Info, files: ReadonlyArray<string>)
     "<skill_files>",
     ...files.map((file) => `<file>${file}</file>`),
     "</skill_files>",
+    ...(children.length === 0
+      ? []
+      : [
+          "",
+          "<routed_skills>",
+          ...children.flatMap((child) => [
+            "  <skill>",
+            `    <name>${child.name}</name>`,
+            `    <description>${child.description}</description>`,
+            "  </skill>",
+          ]),
+          "</routed_skills>",
+        ]),
     "</skill_content>",
   ].join("\n")
 }
@@ -59,6 +79,7 @@ const layer = Layer.effectDiscard(
     const tools = yield* Tools.Service
     const fs = yield* FSUtil.Service
     const skills = yield* SkillV2.Service
+    const agents = yield* AgentV2.Service
     const permission = yield* PermissionV2.Service
     yield* tools
       .register({
@@ -82,6 +103,7 @@ const layer = Layer.effectDiscard(
                   source: { type: "tool", messageID: context.assistantMessageID, callID: context.toolCallID },
                 })
                 const directory = path.dirname(skill.location)
+                const agent = yield* agents.resolve(context.agent)
                 const files =
                   path.basename(skill.location) === "SKILL.md"
                     ? (yield* fs.glob("**/*", { cwd: directory, absolute: true, include: "file", dot: true }))
@@ -92,7 +114,13 @@ const layer = Layer.effectDiscard(
                 return {
                   name: skill.name,
                   directory,
-                  output: toModelOutput(skill, files),
+                  output: toModelOutput(
+                    skill,
+                    files,
+                    agent
+                      ? SkillV2.children(current, skill.name, agent).toSorted((a, b) => a.name.localeCompare(b.name))
+                      : [],
+                  ),
                 }
               }).pipe(Effect.mapError((error) => unableToLoad(input.name, error)))
             }),
@@ -105,5 +133,5 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/skill",
   layer,
-  deps: [ToolRegistry.node, FSUtil.node, SkillV2.node, PermissionV2.node],
+  deps: [ToolRegistry.node, FSUtil.node, SkillV2.node, PermissionV2.node, AgentV2.node],
 })

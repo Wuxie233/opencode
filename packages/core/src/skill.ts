@@ -30,10 +30,44 @@ export type Info = Skill.Info
 export const available = (skills: ReadonlyArray<Info>, agent: AgentV2.Info) =>
   skills.filter((skill) => PermissionV2.evaluate("skill", skill.name, agent.permissions).effect !== "deny")
 
+export const exposure = (skill: Info) => skill.exposure ?? (skill.routers?.length ? "routed" : "root")
+
+export const roots = (skills: ReadonlyArray<Info>, agent: AgentV2.Info) => {
+  const permitted = available(skills, agent)
+  const listed = new Map(
+    permitted.flatMap((skill) =>
+      skill.description !== undefined && exposure(skill) !== "explicit" ? [[skill.name, skill] as const] : [],
+    ),
+  )
+  const reachable = (skill: Info, seen: ReadonlySet<string>): boolean => {
+    if (exposure(skill) === "root") return true
+    if (exposure(skill) === "explicit" || seen.has(skill.name)) return false
+    const next = new Set(seen).add(skill.name)
+    return skill.routers?.some((name) => {
+      const router = listed.get(name)
+      return router !== undefined && reachable(router, next)
+    }) === true
+  }
+  return permitted.filter(
+    (skill) =>
+      skill.description !== undefined &&
+      exposure(skill) !== "explicit" &&
+      (exposure(skill) === "root" || !reachable(skill, new Set())),
+  )
+}
+
+export const children = (skills: ReadonlyArray<Info>, router: string, agent: AgentV2.Info) =>
+  available(skills, agent).filter(
+    (skill) =>
+      skill.description !== undefined && exposure(skill) !== "explicit" && skill.routers?.includes(router) === true,
+  )
+
 const Frontmatter = Schema.Struct({
   name: Schema.String.pipe(Schema.optional),
   description: Schema.String.pipe(Schema.optional),
   slash: Schema.Boolean.pipe(Schema.optional),
+  routers: Schema.Array(Schema.String).pipe(Schema.optional),
+  exposure: Schema.Literals(["root", "routed", "explicit"]).pipe(Schema.optional),
 })
 const decodeFrontmatter = Schema.decodeUnknownOption(Frontmatter)
 
@@ -96,6 +130,8 @@ const layer = Layer.effect(
             name,
             description: frontmatter.description,
             slash: frontmatter.slash,
+            routers: frontmatter.routers,
+            exposure: frontmatter.exposure,
             location: AbsolutePath.make(filepath),
             content: markdown.content,
           })

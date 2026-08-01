@@ -2,6 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
+import { AgentV2 } from "@opencode-ai/core/agent"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV2 } from "@opencode-ai/core/permission"
@@ -66,7 +67,7 @@ describe("SkillTool", () => {
             }),
           )
           const skillToolLayer = AppNodeBuilder.build(
-            LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, SkillTool.node]),
+            LayerNode.group([ToolRegistry.node, ToolRegistry.toolsNode, SkillTool.node, AgentV2.node]),
             [
               [PermissionV2.node, permission],
               [SkillV2.node, skills],
@@ -76,6 +77,12 @@ describe("SkillTool", () => {
 
           return yield* Effect.gen(function* () {
             const registry = yield* ToolRegistry.Service
+            const agents = yield* AgentV2.Service
+            yield* agents.transform((editor) =>
+              editor.update(AgentV2.ID.make("build"), (agent) => {
+                agent.permissions.push({ action: "skill", resource: "denied-child", effect: "deny" })
+              }),
+            )
             expect((yield* toolDefinitions(registry))[0]).toMatchObject({
               name: "skill",
               description: SkillTool.description,
@@ -141,6 +148,74 @@ describe("SkillTool", () => {
                 call: { type: "tool-call", id: "call-flat-skill", name: "skill", input: { name: "public" } },
               }),
             ).toEqual({ type: "text", value: SkillTool.toModelOutput(flat, []) })
+
+            const routed = SkillV2.Info.make({
+              name: "routed",
+              description: "Routed child",
+              routers: ["effect"],
+              location: AbsolutePath.make(path.join(tmp.path, "routed.md")),
+              content: "Routed",
+            })
+            const rootChild = SkillV2.Info.make({
+              name: "root-child",
+              description: "Root guard also listed by its router",
+              routers: ["effect"],
+              exposure: "root",
+              location: AbsolutePath.make(path.join(tmp.path, "root-child.md")),
+              content: "Root child",
+            })
+            const deniedChild = SkillV2.Info.make({
+              name: "denied-child",
+              description: "Denied routed child",
+              routers: ["effect"],
+              location: AbsolutePath.make(path.join(tmp.path, "denied-child.md")),
+              content: "Denied child",
+            })
+            const explicitChild = SkillV2.Info.make({
+              name: "explicit-child",
+              description: "Explicit child",
+              routers: ["effect"],
+              exposure: "explicit",
+              location: AbsolutePath.make(path.join(tmp.path, "explicit-child.md")),
+              content: "Explicit child",
+            })
+            yield* Effect.promise(() =>
+              Promise.all(
+                [routed.location, rootChild.location, deniedChild.location, explicitChild.location].map((file) =>
+                  fs.writeFile(file, "unused"),
+                ),
+              ),
+            )
+            current = [info, routed, rootChild, deniedChild, explicitChild]
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-router", name: "skill", input: { name: "effect" } },
+              }),
+            ).toEqual({
+              type: "text",
+              value: SkillTool.toModelOutput(info, [reference], [rootChild, routed]),
+            })
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: { type: "tool-call", id: "call-routed", name: "skill", input: { name: "routed" } },
+              }),
+            ).toEqual({ type: "text", value: SkillTool.toModelOutput(routed, []) })
+            expect(
+              yield* executeTool(registry, {
+                sessionID,
+                ...toolIdentity,
+                call: {
+                  type: "tool-call",
+                  id: "call-explicit",
+                  name: "skill",
+                  input: { name: "explicit-child" },
+                },
+              }),
+            ).toEqual({ type: "text", value: SkillTool.toModelOutput(explicitChild, []) })
           }).pipe(Effect.provide(skillToolLayer))
         }),
       ),

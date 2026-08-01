@@ -38,6 +38,16 @@ description: ${description}
   )
 }
 
+function info(name: string, input: { routers?: string[]; exposure?: "root" | "routed" | "explicit" } = {}) {
+  return SkillV2.Info.make({
+    name,
+    description: name,
+    ...input,
+    location: AbsolutePath.make(path.resolve(`/skills/${name}/SKILL.md`)),
+    content: name,
+  })
+}
+
 describe("SkillV2", () => {
   it.live("registers sources and resolves later source precedence", () =>
     Effect.acquireRelease(
@@ -121,5 +131,91 @@ describe("SkillV2", () => {
         }),
       ),
     ),
+  )
+
+  it.live("loads routed skill metadata from frontmatter", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(path.join(tmp.path, "child"), { recursive: true })
+            await fs.writeFile(
+              path.join(tmp.path, "child", "SKILL.md"),
+              `---
+name: child
+description: Routed child
+routers:
+  - first-router
+  - second-router
+exposure: explicit
+---
+# Child`,
+            )
+          })
+          const skill = yield* SkillV2.Service
+          yield* skill.transform((editor) =>
+            editor.source({ type: "directory", path: AbsolutePath.make(tmp.path) }),
+          )
+          expect(yield* skill.list()).toEqual([
+            SkillV2.Info.make({
+              name: "child",
+              description: "Routed child",
+              routers: ["first-router", "second-router"],
+              exposure: "explicit",
+              location: AbsolutePath.make(path.join(tmp.path, "child", "SKILL.md")),
+              content: "# Child",
+            }),
+          ])
+        }),
+      ),
+    ),
+  )
+
+  it.effect("infers exposure and promotes routed skills whose router path is unreachable", () =>
+    Effect.sync(() => {
+      const agent = AgentV2.Info.empty(AgentV2.ID.make("build"))
+      const root = info("root")
+      const nestedRouter = info("nested-router", { routers: ["root"] })
+      const nestedChild = info("nested-child", { routers: ["nested-router"] })
+      const multiParent = info("multi-parent", { routers: ["missing", "root"] })
+      const guard = info("guard", { routers: ["root"], exposure: "root" })
+      const explicit = info("explicit", { exposure: "explicit" })
+      const orphan = info("orphan", { routers: ["missing"] })
+      const firstCycle = info("first-cycle", { routers: ["second-cycle"] })
+      const secondCycle = info("second-cycle", { routers: ["first-cycle"] })
+      const skills = [
+        root,
+        nestedRouter,
+        nestedChild,
+        multiParent,
+        guard,
+        explicit,
+        orphan,
+        firstCycle,
+        secondCycle,
+      ]
+
+      expect(SkillV2.exposure(root)).toBe("root")
+      expect(SkillV2.exposure(nestedChild)).toBe("routed")
+      expect(SkillV2.exposure(explicit)).toBe("explicit")
+      expect(SkillV2.roots(skills, agent).map((skill) => skill.name)).toEqual([
+        "root",
+        "guard",
+        "orphan",
+        "first-cycle",
+        "second-cycle",
+      ])
+      expect(SkillV2.children(skills, "root", agent).map((skill) => skill.name)).toEqual([
+        "nested-router",
+        "multi-parent",
+        "guard",
+      ])
+      expect(SkillV2.children(skills, "nested-router", agent).map((skill) => skill.name)).toEqual([
+        "nested-child",
+      ])
+    }),
   )
 })

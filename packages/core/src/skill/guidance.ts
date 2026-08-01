@@ -46,13 +46,12 @@ const layer = Layer.effect(
       load: Effect.fn("SkillGuidance.load")(function* (selection) {
         const agent = selection.info
         if (!agent) return SystemContext.empty
-        const permitted = SkillV2.available(yield* skills.list(), agent)
+        const current = yield* skills.list()
+        const permitted = SkillV2.available(current, agent)
         if (permitted.length === 0 && PermissionV2.evaluate("skill", "*", agent.permissions).effect === "deny")
           return SystemContext.empty
-        const available = permitted
-          .flatMap((skill) =>
-            skill.description === undefined ? [] : [{ name: skill.name, description: skill.description }],
-          )
+        const available = SkillV2.roots(current, agent)
+          .map((skill) => ({ name: skill.name, description: skill.description! }))
           .toSorted((a, b) => a.name.localeCompare(b.name))
         return SystemContext.make({
           key: SystemContext.Key.make("core/skill-guidance"),
