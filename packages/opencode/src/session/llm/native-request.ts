@@ -1,5 +1,5 @@
 import type { JsonSchema, LLMRequest, ProviderMetadata } from "@opencode-ai/llm"
-import { LLM, Message, SystemPart, ToolCallPart, ToolDefinition, ToolResultPart } from "@opencode-ai/llm"
+import { LLM, Message, Model, ProviderID, SystemPart, ToolCallPart, ToolDefinition, ToolResultPart } from "@opencode-ai/llm"
 import {
   AmazonBedrock,
   Anthropic,
@@ -162,7 +162,10 @@ export const model = (input: Provider.Model | RequestInput, headers?: Record<str
       output: model.limit.output,
     },
   }
-  if (model.api.npm === "@ai-sdk/openai") return OpenAI.configure(options).responses(model.api.id)
+  if (model.api.npm === "@ai-sdk/openai") {
+    const routed = OpenAI.configure(options).responses(model.api.id)
+    return Model.update(routed, { id: model.id, provider: ProviderID.make(model.providerID) })
+  }
   if (model.api.npm === "@ai-sdk/azure")
     return Azure.configure({ ...options, baseURL: requireBaseURL(model, url) }).responses(model.api.id)
   if (model.api.npm === "@ai-sdk/anthropic") return Anthropic.configure(options).model(model.api.id)

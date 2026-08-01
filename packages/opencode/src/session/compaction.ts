@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { llmClient as llmClientNode, requestExecutor as requestExecutorNode } from "@opencode-ai/core/effect/app-node-platform"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { Session } from "./session"
@@ -18,10 +19,21 @@ import { isOverflow as overflow, usable } from "./overflow"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { EventV2 } from "@opencode-ai/core/event"
+import { Database } from "@opencode-ai/core/database/database"
+import { SessionCanonicalWindow } from "@opencode-ai/core/session/canonical-window"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { buildPrompt } from "@opencode-ai/core/session/compaction"
 import { SessionCompactionEvent } from "@opencode-ai/schema/session-compaction-event"
+import { Auth } from "@/auth"
+import { LLMClient } from "@opencode-ai/llm"
+import { RequestExecutor } from "@opencode-ai/llm/route"
+import type { OpenAIResponsesBody } from "@opencode-ai/llm/protocols/openai-responses"
+import { OpenAIResponsesCompact } from "@opencode-ai/llm/protocols/openai-responses-compact"
+import { LLMNative } from "./llm/native-request"
+import type { ModelMessage } from "ai"
 
 export const Event = SessionCompactionEvent
 
@@ -32,6 +44,8 @@ const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
+const PROVIDER_COMPACTION_TIMEOUT = "5 minutes"
+const PROVIDER_COMPACTION_MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.6-terra"])
 type Turn = {
   start: number
   end: number
@@ -140,6 +154,12 @@ export interface Interface {
     auto: boolean
     overflow?: boolean
   }) => Effect.Effect<"continue" | "stop">
+  readonly canonical: (input: {
+    sessionID: SessionID
+    messages: SessionV1.WithParts[]
+    model: Provider.Model
+    variant?: string
+  }) => Effect.Effect<{ messages: SessionV1.WithParts[]; input?: ReadonlyArray<unknown> }>
   readonly create: (input: {
     sessionID: SessionID
     agent: string
@@ -164,6 +184,10 @@ const layer = Layer.effect(
     const provider = yield* Provider.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const auth = yield* Auth.Service
+    const llmClient = yield* LLMClient.Service
+    const executor = yield* RequestExecutor.Service
+    const { db } = yield* Database.Service
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: SessionV1.Assistant["tokens"]
@@ -236,6 +260,110 @@ const layer = Layer.effect(
         head: input.messages.slice(0, keep.start),
         tail_start_id: keep.id,
       }
+    })
+
+    const providerCompact = Effect.fn("SessionCompaction.providerCompact")(function* (input: {
+      sessionID: SessionID
+      sourceSeq: number
+      user: SessionV1.User
+      model: Provider.Model
+      messages: ModelMessage[]
+      canonicalInput?: ReadonlyArray<unknown>
+    }) {
+      const cfg = yield* config.get()
+      if (cfg.compaction?.mode === "local") return undefined
+      if (input.model.api.npm !== "@ai-sdk/openai" || !PROVIDER_COMPACTION_MODELS.has(input.model.id)) return undefined
+      if (!OpenAIResponsesCompact.supported(LLMNative.model(input.model))) return undefined
+      const info = yield* provider.getProvider(input.model.providerID)
+      const credential = yield* auth.get(input.model.providerID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const apiKey = credential?.type === "api" ? credential.key : info.options.apiKey ?? info.key
+      if (typeof apiKey !== "string" || !apiKey) return undefined
+      const baseURL = typeof info.options.baseURL === "string" ? info.options.baseURL : input.model.api.url
+      return yield* Effect.gen(function* () {
+        const request = LLMNative.request({
+          model: input.model,
+          apiKey,
+          baseURL,
+          messages: input.messages,
+          tools: {},
+          maxOutputTokens: 1,
+          providerOptions: {
+            openai: {
+              store: false,
+              promptCacheKey: input.sessionID,
+              ...(input.canonicalInput ? { canonicalInput: input.canonicalInput } : {}),
+            },
+          },
+        })
+        const prepared = yield* llmClient.prepare<OpenAIResponsesBody>(request)
+        const compacted = yield* OpenAIResponsesCompact.compact({
+          request,
+          body: {
+            model: prepared.body.model,
+            input: prepared.body.input,
+            instructions: prepared.body.instructions,
+            prompt_cache_key: prepared.body.prompt_cache_key,
+            service_tier: prepared.body.service_tier,
+          },
+          executor,
+        })
+        yield* SessionCanonicalWindow.replace(db, {
+          sessionID: SessionSchema.ID.make(input.sessionID),
+          providerID: input.model.providerID,
+          modelID: input.model.id,
+          routeID: request.model.route.id,
+          variant: input.user.model.variant,
+          sourceSeq: input.sourceSeq,
+          items: compacted.output,
+        })
+        return { items: compacted.output, routeID: request.model.route.id }
+      }).pipe(
+        Effect.timeout(PROVIDER_COMPACTION_TIMEOUT),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
+    })
+
+    const canonical = Effect.fn("SessionCompaction.canonical")(function* (input: {
+      sessionID: SessionID
+      messages: SessionV1.WithParts[]
+      model: Provider.Model
+      variant?: string
+    }) {
+      const markerIndex = input.messages.findLastIndex(
+        (message) =>
+          message.info.role === "user" &&
+          message.parts.some(
+            (part) => part.type === "compaction" && part.provider === true && part.provider_source_seq !== undefined,
+          ),
+      )
+      if (markerIndex < 0) return { messages: input.messages }
+      if (input.model.api.npm !== "@ai-sdk/openai" || !PROVIDER_COMPACTION_MODELS.has(input.model.id))
+        return { messages: input.messages }
+      if (
+        input.messages
+          .slice(markerIndex + 1)
+          .some((message) => message.parts.some((part) => part.type === "compaction"))
+      )
+        return { messages: input.messages }
+      const marker = input.messages[markerIndex]!
+      const markerPart = marker.parts.find(
+        (part): part is SessionV1.CompactionPart =>
+          part.type === "compaction" && part.provider === true && part.provider_source_seq !== undefined,
+      )
+      if (!markerPart) return { messages: input.messages }
+      return yield* Effect.gen(function* () {
+        const routeID = LLMNative.model(input.model).route.id
+        const current = yield* SessionCanonicalWindow.load(db, {
+          sessionID: SessionSchema.ID.make(input.sessionID),
+          providerID: input.model.providerID,
+          modelID: input.model.id,
+          routeID,
+          variant: input.variant,
+        })
+        if (!current || current.sourceSeq !== markerPart.provider_source_seq)
+          return { messages: input.messages }
+        return { messages: input.messages.slice(markerIndex + 1), input: current.items }
+      }).pipe(Effect.catch(() => Effect.succeed({ messages: input.messages })))
     })
 
     // goes backwards through parts until there are PRUNE_PROTECT tokens worth of tool
@@ -329,6 +457,9 @@ const layer = Layer.effect(
       const model = agent.model
         ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
         : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
+      const targetModel = yield* provider
+        .getModel(userMessage.model.providerID, userMessage.model.modelID)
+        .pipe(Effect.orDie)
       const cfg = yield* config.get()
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
@@ -339,69 +470,79 @@ const layer = Layer.effect(
         cfg,
         model,
       })
-      // Allow plugins to inject context or replace compaction prompt.
-      const compacting = yield* plugin.trigger(
-        "experimental.session.compacting",
-        { sessionID: input.sessionID },
-        { context: [], prompt: undefined },
-      )
-      const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
-      const msgs = structuredClone(selected.head)
-      yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
-        stripMedia: true,
-        toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
-      })
-      const ctx = yield* InstanceState.context
-      const msg: SessionV1.Assistant = {
-        id: MessageID.ascending(),
-        role: "assistant",
-        parentID: input.parentID,
-        sessionID: input.sessionID,
-        mode: "compaction",
-        agent: "compaction",
-        variant: userMessage.model.variant,
-        summary: true,
-        path: {
-          cwd: ctx.directory,
-          root: ctx.worktree,
-        },
-        cost: 0,
-        tokens: {
-          output: 0,
-          input: 0,
-          reasoning: 0,
-          cache: { read: 0, write: 0 },
-        },
-        modelID: model.id,
-        providerID: model.providerID,
-        time: {
-          created: Date.now(),
-        },
+      let result: "continue" | "stop" | "compact" | undefined
+      if (compactionPart) {
+        const sourceSeq = yield* EventV2.latestSequence(db, input.sessionID)
+        const previous = yield* canonical({
+          sessionID: input.sessionID,
+          messages: history,
+          model: targetModel,
+          variant: userMessage.model.variant,
+        })
+        const nativeMessages = yield* MessageV2.toModelMessagesEffect(previous.messages, targetModel, {
+          stripMedia: true,
+          toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+        })
+        const native = yield* providerCompact({
+          sessionID: input.sessionID,
+          sourceSeq,
+          user: userMessage,
+          model: targetModel,
+          messages: nativeMessages,
+          canonicalInput: previous.input,
+        })
+        if (native) {
+          yield* session.updatePart({ ...compactionPart, provider: true, provider_source_seq: sourceSeq })
+          result = input.auto ? "continue" : "stop"
+        }
       }
-      yield* session.updateMessage(msg)
-      const processor = yield* processors.create({
-        assistantMessage: msg,
-        sessionID: input.sessionID,
-        model,
-      })
-      const result = yield* processor.process({
-        user: userMessage,
-        agent,
-        sessionID: input.sessionID,
-        tools: {},
-        system: [],
-        messages: [
-          ...modelMessages,
-          {
-            role: "user",
-            content: [{ type: "text", text: nextPrompt }],
-          },
-        ],
-        model,
-      })
+      let processor: SessionProcessor.Handle | undefined
+      if (!result) {
+        // Allow plugins to inject context or replace compaction prompt.
+        const compacting = yield* plugin.trigger(
+          "experimental.session.compacting",
+          { sessionID: input.sessionID },
+          { context: [], prompt: undefined },
+        )
+        const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
+        const msgs = structuredClone(selected.head)
+        yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+        const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
+          stripMedia: true,
+          toolOutputMaxChars: TOOL_OUTPUT_MAX_CHARS,
+        })
+        const ctx = yield* InstanceState.context
+        const msg: SessionV1.Assistant = {
+          id: MessageID.ascending(),
+          role: "assistant",
+          parentID: input.parentID,
+          sessionID: input.sessionID,
+          mode: "compaction",
+          agent: "compaction",
+          variant: userMessage.model.variant,
+          summary: true,
+          path: { cwd: ctx.directory, root: ctx.worktree },
+          cost: 0,
+          tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          modelID: model.id,
+          providerID: model.providerID,
+          time: { created: Date.now() },
+        }
+        yield* session.updateMessage(msg)
+        processor = yield* processors.create({ assistantMessage: msg, sessionID: input.sessionID, model })
+        result = yield* processor.process({
+          user: userMessage,
+          agent,
+          sessionID: input.sessionID,
+          tools: {},
+          system: [],
+          messages: [...modelMessages, { role: "user", content: [{ type: "text", text: nextPrompt }] }],
+          model,
+        })
+      }
 
       if (result === "compact") {
+        if (!processor) return "stop"
         processor.message.error = new SessionV1.ContextOverflowError({
           message: replay
             ? "Conversation history too large to compact - exceeds model context limit"
@@ -503,8 +644,12 @@ const layer = Layer.effect(
         }
       }
 
-      if (processor.message.error) return "stop"
-      if (result === "continue") {
+      if (processor?.message.error) return "stop"
+      if (result === "continue" || (result === "stop" && !processor)) {
+        if (processor)
+          yield* SessionCanonicalWindow.clear(db, SessionSchema.ID.make(input.sessionID)).pipe(
+            Effect.catch(() => Effect.void),
+          )
         yield* events.publish(Event.Compacted, { sessionID: input.sessionID })
       }
       return result
@@ -539,6 +684,7 @@ const layer = Layer.effect(
       isOverflow,
       prune,
       process: processCompaction,
+      canonical,
       create,
     })
   }),
@@ -556,6 +702,10 @@ export const node = LayerNode.make({
     Provider.node,
     EventV2Bridge.node,
     RuntimeFlags.node,
+    Auth.node,
+    Database.node,
+    llmClientNode,
+    requestExecutorNode,
   ],
 })
 

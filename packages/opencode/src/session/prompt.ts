@@ -1204,6 +1204,13 @@ const layer = Layer.effect(
           }
           const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
+          const canonical = yield* compaction.canonical({
+            sessionID,
+            messages: msgs,
+            model,
+            variant: lastUser.model.variant,
+          })
+          msgs = canonical.messages
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
             Effect.provideService(FSUtil.Service, fsys),
@@ -1309,6 +1316,7 @@ const layer = Layer.effect(
               ],
               tools,
               model,
+              canonicalInput: canonical.input,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 

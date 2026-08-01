@@ -33,6 +33,10 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { requestExecutor } from "@opencode-ai/core/effect/app-node-platform"
+import { SessionCanonicalWindow } from "@opencode-ai/core/session/canonical-window"
+import { HttpClientResponse } from "effect/unstable/http"
+import { RequestExecutor } from "@opencode-ai/llm/route"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -88,7 +92,7 @@ function createModel(opts: {
 
 const wide = () => ProviderTest.fake({ model: createModel({ context: 100_000, output: 32_000 }) })
 
-function createUserMessage(sessionID: SessionID, text: string) {
+function createUserMessage(sessionID: SessionID, text: string, model = ref) {
   return Effect.gen(function* () {
     const ssn = yield* SessionNs.Service
     const msg = yield* ssn.updateMessage({
@@ -96,7 +100,7 @@ function createUserMessage(sessionID: SessionID, text: string) {
       role: "user",
       sessionID,
       agent: "build",
-      model: ref,
+      model,
       time: { created: Date.now() },
     })
     yield* ssn.updatePart({
@@ -171,13 +175,13 @@ function createSummaryAssistantMessage(sessionID: SessionID, parentID: MessageID
   )
 }
 
-function createCompactionMarker(sessionID: SessionID) {
+function createCompactionMarker(sessionID: SessionID, model = ref) {
   return SessionNs.Service.use((ssn) =>
     Effect.gen(function* () {
       const msg = yield* ssn.updateMessage({
         id: MessageID.ascending(),
         role: "user",
-        model: ref,
+        model,
         sessionID,
         agent: "build",
         time: { created: Date.now() },
@@ -248,8 +252,9 @@ type CompactionProcessOptions = {
   result?: "continue" | "compact"
   llm?: Layer.Layer<LLM.Service>
   plugin?: Layer.Layer<Plugin.Service>
-  provider?: ReturnType<typeof wide>
+  provider?: Layer.Layer<Provider.Service>
   config?: Layer.Layer<Config.Service>
+  executor?: Layer.Layer<RequestExecutor.Service>
 }
 
 function withCompaction(options?: CompactionProcessOptions) {
@@ -258,9 +263,10 @@ function withCompaction(options?: CompactionProcessOptions) {
 
 function compactionProcessLayer(options?: CompactionProcessOptions) {
   const replacements: LayerNode.Replacements = [
-    [Provider.node, (options?.provider ?? wide()).layer],
+    [Provider.node, options?.provider ?? wide().layer],
     [RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })],
     [SessionSummary.node, summary],
+    ...(options?.executor ? ([[requestExecutor, options.executor]] as const) : []),
   ]
   if (!options?.llm) {
     return AppNodeBuilder.build(compactionTestNode, [
@@ -798,6 +804,150 @@ describe("session.compaction.prune", () => {
 })
 
 describe("session.compaction.process", () => {
+  const nativeRef = {
+    providerID: ProviderV2.ID.make("wuxie-openai"),
+    modelID: ModelV2.ID.make("gpt-5.6-sol"),
+  }
+  const nativeModel = ProviderTest.model({
+    id: nativeRef.modelID,
+    providerID: nativeRef.providerID,
+    api: { id: "gpt-5.6-sol", url: "https://api.openai.test/v1", npm: "@ai-sdk/openai" },
+  })
+  const nativeProvider = ProviderTest.fake({
+    model: nativeModel,
+    info: ProviderTest.info(
+      {
+        id: nativeRef.providerID,
+        options: { apiKey: "test-key", baseURL: "https://api.openai.test/v1" },
+      },
+      nativeModel,
+    ),
+    getModel: () => Effect.succeed(nativeModel),
+    getProvider: () =>
+      Effect.succeed(
+        ProviderTest.info(
+          {
+            id: nativeRef.providerID,
+            options: { apiKey: "test-key", baseURL: "https://api.openai.test/v1" },
+          },
+          nativeModel,
+        ),
+      ),
+  })
+  const compactResponse = (request: Parameters<RequestExecutor.Interface["execute"]>[0], output: unknown[]) =>
+    HttpClientResponse.fromWeb(
+      request,
+      new Response(JSON.stringify({ id: "cmp_test", object: "response.compaction", output }), {
+        headers: { "content-type": "application/json" },
+      }),
+    )
+
+  itCompaction.instance(
+    "persists and replays provider-native compaction for the legacy session path",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({ model: { id: nativeRef.modelID, providerID: nativeRef.providerID } })
+      yield* createUserMessage(session.id, "earlier context", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      const marker = msgs.at(-1)!
+      const output = [{ type: "compaction", encrypted_content: "opaque" }]
+
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: marker.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("stop")
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const part = saved.at(-1)?.parts.find((item) => item.type === "compaction")
+      expect(part?.type === "compaction" && part.provider).toBe(true)
+      expect(part?.type === "compaction" && part.provider_source_seq).toBeGreaterThanOrEqual(0)
+      const replay = yield* SessionCompaction.use.canonical({
+        sessionID: session.id,
+        messages: saved,
+        model: nativeModel,
+      })
+      expect(replay.input).toEqual(output)
+      expect(replay.messages).toEqual([])
+      expect(
+        yield* SessionCanonicalWindow.load((yield* Database.Service).db, {
+          sessionID: session.id,
+          providerID: nativeRef.providerID,
+          modelID: nativeRef.modelID,
+          routeID: "openai-responses",
+        }),
+      ).toBeDefined()
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider.layer,
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: (request) => Effect.succeed(compactResponse(request, [{ type: "compaction", encrypted_content: "opaque" }])),
+        }),
+      }),
+    ),
+  )
+
+  itCompaction.instance(
+    "uses local compaction without calling the provider endpoint when mode is local",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "earlier context", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("continue")
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider.layer,
+        config: cfg({ mode: "local" }),
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: () => Effect.die("provider endpoint must not be called"),
+        }),
+      }),
+    ),
+  )
+
+  itCompaction.instance(
+    "falls back to the visible legacy summary when provider compaction is invalid",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "earlier context", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("continue")
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      expect(saved.some((message) => message.info.role === "assistant" && message.info.summary)).toBe(true)
+      const part = saved.find((message) => message.info.id === msgs.at(-1)!.info.id)?.parts.find((item) => item.type === "compaction")
+      expect(part?.type === "compaction" && part.provider).toBeFalsy()
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider.layer,
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: (request) => Effect.succeed(compactResponse(request, [{ type: "message" }])),
+        }),
+      }),
+    ),
+  )
+
   it.instance(
     "throws when parent is not a user message",
     Effect.gen(function* () {

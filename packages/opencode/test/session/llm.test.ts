@@ -1261,6 +1261,7 @@ describe("session.llm.stream", () => {
 
         const resolved = yield* Provider.use.getModel(ProviderV2.ID.openai, ModelV2.ID.make(model.id))
         const sessionID = SessionID.make("session-test-native")
+        const canonical = [{ type: "compaction", encrypted_content: "opaque-canonical" }]
         const agent = {
           name: "test",
           mode: "primary",
@@ -1283,6 +1284,7 @@ describe("session.llm.stream", () => {
           agent,
           system: ["You are a helpful assistant."],
           messages: [{ role: "user", content: "Hello" }],
+          canonicalInput: canonical,
           tools: {},
         })
 
@@ -1294,6 +1296,7 @@ describe("session.llm.stream", () => {
         expect((capture.body.reasoning as { effort?: string } | undefined)?.effort).toBe("high")
         expect(capture.body.include).toEqual(["reasoning.encrypted_content"])
         expect(JSON.stringify(capture.body.input)).toContain("You are a helpful assistant.")
+        expect(capture.body.input).toContainEqual(canonical[0])
         expect(capture.body.input).toContainEqual({ role: "user", content: [{ type: "input_text", text: "Hello" }] })
       }),
     { config: () => openAIConfig(loadFixture("openai", "gpt-5.2").model, `${state.server!.url.origin}/v1`) },

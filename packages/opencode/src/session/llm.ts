@@ -45,6 +45,7 @@ export type StreamInput = {
   tools: Record<string, Tool>
   retries?: number
   toolChoice?: "auto" | "required" | "none"
+  canonicalInput?: ReadonlyArray<unknown>
 }
 
 export type StreamRequest = StreamInput & {
@@ -110,6 +111,7 @@ const live: Layer.Layer<
         plugin,
         flags,
         isWorkflow,
+        canonicalInput: input.canonicalInput,
       })
 
       // Wire up toolExecutor for DWS workflow models so that tool calls
