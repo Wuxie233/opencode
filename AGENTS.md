@@ -148,6 +148,12 @@ const table = sqliteTable("session", {
 
 - Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
 
+## Routed Skills
+
+- Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.
+- Root guidance includes root skills and fail-open routed skills whose permitted router path is missing, denied, explicit-only, or cyclic. Loading a router lists only its directly routed, permitted children; exact-name loading remains available for every registered skill.
+- Keep routed-skill selection derived from the current skill registry and agent permissions. Do not persist loaded-router state in sessions or expand routed children into global guidance.
+
 ## V2 Session Core
 
 - Keep durable prompt admission separate from model execution. `SessionV2.prompt(...)` admits one durable `session_input` row before scheduling advisory `SessionExecution.wake(sessionID)` unless `resume: false` requests admit-only behavior. The serialized runner promotes admitted inputs into visible user messages at safe boundaries.

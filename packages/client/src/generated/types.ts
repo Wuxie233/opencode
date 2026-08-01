@@ -2533,6 +2533,8 @@ export type SkillsListOutput = {
     readonly name: string
     readonly description?: string
     readonly slash?: boolean
+    readonly routers?: ReadonlyArray<string>
+    readonly exposure?: "root" | "routed" | "explicit"
     readonly location: string
     readonly content: string
   }>

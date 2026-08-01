@@ -27,6 +27,33 @@ const denied = SkillV2.Info.make({
   location: AbsolutePath.make(path.resolve("/skills/denied/SKILL.md")),
   content: "Denied guidance",
 })
+const router = SkillV2.Info.make({
+  name: "router",
+  description: "Route specialized skills",
+  location: AbsolutePath.make(path.resolve("/skills/router/SKILL.md")),
+  content: "Router guidance",
+})
+const child = SkillV2.Info.make({
+  name: "child",
+  description: "Specialized child",
+  routers: ["router"],
+  location: AbsolutePath.make(path.resolve("/skills/child/SKILL.md")),
+  content: "Child guidance",
+})
+const explicit = SkillV2.Info.make({
+  name: "explicit",
+  description: "Only load by exact name",
+  exposure: "explicit",
+  location: AbsolutePath.make(path.resolve("/skills/explicit/SKILL.md")),
+  content: "Explicit guidance",
+})
+const orphan = SkillV2.Info.make({
+  name: "orphan",
+  description: "Promoted when its router is unavailable",
+  routers: ["missing-router"],
+  location: AbsolutePath.make(path.resolve("/skills/orphan/SKILL.md")),
+  content: "Orphan guidance",
+})
 
 const layer = (list: () => SkillV2.Info[]) =>
   AppNodeBuilder.build(SkillGuidance.node, [
@@ -69,6 +96,37 @@ describe("SkillGuidance", () => {
         text: expect.stringContaining("No skills are currently available."),
       })
     }).pipe(Effect.provide(layer(() => skills)))
+  })
+
+  it.effect("advertises roots and promotes children whose router is denied", () => {
+    const agent = AgentV2.Info.make({
+      ...AgentV2.Info.empty(build),
+      permissions: [{ action: "skill", resource: "router", effect: "deny" }],
+    })
+    return Effect.gen(function* () {
+      const guidance = yield* SkillGuidance.Service
+      const baseline = (
+        yield* guidance.load({ id: agent.id, info: agent }).pipe(Effect.flatMap(SystemContext.initialize))
+      ).baseline
+      expect(baseline).not.toContain("<name>router</name>")
+      expect(baseline).not.toContain("<name>explicit</name>")
+      expect(baseline).toContain("<name>child</name>")
+      expect(baseline).toContain("<name>orphan</name>")
+    }).pipe(Effect.provide(layer(() => [router, child, explicit, orphan])))
+  })
+
+  it.effect("keeps reachable routed and explicit skills out of root guidance", () => {
+    const agent = AgentV2.Info.empty(build)
+    return Effect.gen(function* () {
+      const guidance = yield* SkillGuidance.Service
+      const baseline = (
+        yield* guidance.load({ id: agent.id, info: agent }).pipe(Effect.flatMap(SystemContext.initialize))
+      ).baseline
+      expect(baseline).toContain("<name>router</name>")
+      expect(baseline).toContain("<name>orphan</name>")
+      expect(baseline).not.toContain("<name>child</name>")
+      expect(baseline).not.toContain("<name>explicit</name>")
+    }).pipe(Effect.provide(layer(() => [router, child, explicit, orphan])))
   })
 
   it.effect("omits guidance when the selected agent denies all skills", () => {

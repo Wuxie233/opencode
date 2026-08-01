@@ -21,6 +21,8 @@ export const Info = Schema.Struct({
   name: Schema.String,
   description: Schema.String.pipe(optional),
   slash: Schema.Boolean.pipe(optional),
+  routers: Schema.Array(Schema.String).pipe(optional),
+  exposure: Schema.Literals(["root", "routed", "explicit"]).pipe(optional),
   location: AbsolutePath,
   content: Schema.String,
 }).annotate({ identifier: "SkillV2.Info" })
