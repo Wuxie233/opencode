@@ -37,6 +37,8 @@ const CUSTOMIZE_OPENCODE_SKILL_BODY = SkillPlugin.CustomizeOpencodeContent
 export const Info = Schema.Struct({
   name: Schema.String,
   description: Schema.optional(Schema.String),
+  routers: Schema.optional(Schema.Array(Schema.String)),
+  exposure: Schema.optional(Schema.Literals(["root", "routed", "explicit"])),
   location: Schema.String,
   content: Schema.String,
 })
@@ -50,11 +52,20 @@ const Issue = Schema.StructWithRest(
   [Schema.Record(Schema.String, Schema.Unknown)],
 )
 
-function isSkillFrontmatter(data: unknown): data is { name: string; description?: string } {
+function isSkillFrontmatter(data: unknown): data is {
+  name: string
+  description?: string
+  routers?: string[]
+  exposure?: "root" | "routed" | "explicit"
+} {
   return (
     isRecord(data) &&
     typeof data.name === "string" &&
-    (data.description === undefined || typeof data.description === "string")
+    (data.description === undefined || typeof data.description === "string") &&
+    (data.routers === undefined ||
+      (Array.isArray(data.routers) && data.routers.every((router) => typeof router === "string"))) &&
+    (data.exposure === undefined ||
+      (typeof data.exposure === "string" && ["root", "routed", "explicit"].includes(data.exposure)))
   )
 }
 
@@ -134,6 +145,8 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
   state.skills[md.data.name] = {
     name: md.data.name,
     description: md.data.description,
+    routers: md.data.routers,
+    exposure: md.data.exposure,
     location: match,
     content: md.content,
   }
@@ -344,6 +357,37 @@ export function fmt(list: Info[], opts: { verbose: boolean }) {
       .map((skill) => `- **${skill.name}**: ${skill.description}`),
   ].join("\n")
 }
+
+export const exposure = (skill: Info) => skill.exposure ?? (skill.routers?.length ? "routed" : "root")
+
+export const roots = (skills: Info[]) => {
+  const listed = new Map(
+    skills.flatMap((skill) =>
+      skill.description !== undefined && exposure(skill) !== "explicit" ? [[skill.name, skill] as const] : [],
+    ),
+  )
+  const reachable = (skill: Info, seen: ReadonlySet<string>): boolean => {
+    if (exposure(skill) === "root") return true
+    if (exposure(skill) === "explicit" || seen.has(skill.name)) return false
+    const next = new Set(seen).add(skill.name)
+    return skill.routers?.some((name) => {
+      const router = listed.get(name)
+      return router !== undefined && reachable(router, next)
+    }) === true
+  }
+  return skills.filter(
+    (skill) =>
+      skill.description !== undefined &&
+      exposure(skill) !== "explicit" &&
+      (exposure(skill) === "root" || !reachable(skill, new Set())),
+  )
+}
+
+export const children = (skills: Info[], router: string) =>
+  skills.filter(
+    (skill) =>
+      skill.description !== undefined && exposure(skill) !== "explicit" && skill.routers?.includes(router) === true,
+  )
 
 export const node = LayerNode.make({
   service: Service,

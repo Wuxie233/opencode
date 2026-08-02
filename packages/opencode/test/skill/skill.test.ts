@@ -91,6 +91,45 @@ describe("skill", () => {
     }),
   )
 
+  it.effect("resolves routed roots and direct children with fail-open semantics", () =>
+    Effect.sync(() => {
+      const info = (name: string, input: Partial<Skill.Info> = {}): Skill.Info => ({
+        name,
+        description: `${name} description`,
+        location: `/tmp/${name}/SKILL.md`,
+        content: `# ${name}`,
+        ...input,
+      })
+      const skills = [
+        info("root"),
+        info("nested-router", { routers: ["root"] }),
+        info("nested-child", { routers: ["nested-router"] }),
+        info("multi-parent", { routers: ["missing", "root"] }),
+        info("root-child", { routers: ["root"], exposure: "root" }),
+        info("explicit", { exposure: "explicit" }),
+        info("orphan", { routers: ["missing"] }),
+        info("first-cycle", { routers: ["second-cycle"] }),
+        info("second-cycle", { routers: ["first-cycle"] }),
+      ]
+
+      expect(Skill.exposure(skills[0])).toBe("root")
+      expect(Skill.exposure(skills[2])).toBe("routed")
+      expect(Skill.roots(skills).map((skill) => skill.name)).toEqual([
+        "root",
+        "root-child",
+        "orphan",
+        "first-cycle",
+        "second-cycle",
+      ])
+      expect(Skill.children(skills, "root").map((skill) => skill.name)).toEqual([
+        "nested-router",
+        "multi-parent",
+        "root-child",
+      ])
+      expect(Skill.children(skills, "nested-router").map((skill) => skill.name)).toEqual(["nested-child"])
+    }),
+  )
+
   it.live("discovers skills from .opencode/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>
@@ -172,6 +211,9 @@ description: First test skill.
                 `---
 name: skill-two
 description: Second test skill.
+routers:
+  - skill-one
+exposure: explicit
 ---
 
 # Skill Two
@@ -184,7 +226,10 @@ description: Second test skill.
           const list = (yield* skill.all()).filter((s) => s.location !== "<built-in>")
           expect(list.length).toBe(2)
           expect(list.find((x) => x.name === "skill-one")).toBeDefined()
-          expect(list.find((x) => x.name === "skill-two")).toBeDefined()
+          expect(list.find((x) => x.name === "skill-two")).toMatchObject({
+            routers: ["skill-one"],
+            exposure: "explicit",
+          })
         }),
       { git: true },
     ),
