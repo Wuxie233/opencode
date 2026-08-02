@@ -34,6 +34,27 @@ const skills: Skill.Info[] = [
     location: "/tmp/manual-skill/SKILL.md",
     content: "# manual-skill",
   },
+  {
+    name: "router-skill",
+    description: "Router skill.",
+    exposure: "root",
+    location: "/tmp/router-skill/SKILL.md",
+    content: "# router-skill",
+  },
+  {
+    name: "routed-child",
+    description: "Routed child.",
+    routers: ["router-skill"],
+    location: "/tmp/routed-child/SKILL.md",
+    content: "# routed-child",
+  },
+  {
+    name: "explicit-skill",
+    description: "Explicit skill.",
+    exposure: "explicit",
+    location: "/tmp/explicit-skill/SKILL.md",
+    content: "# explicit-skill",
+  },
 ]
 
 const build: Agent.Info = {
@@ -76,7 +97,12 @@ const it = testEffect(
           },
           all: () => Effect.succeed(skills),
           dirs: () => Effect.succeed([]),
-          available: () => Effect.succeed(skills),
+          available: (agent) =>
+            Effect.succeed(
+              agent
+                ? skills.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
+                : skills,
+            ),
         }),
       ),
     ],
@@ -107,6 +133,23 @@ describe("session.system", () => {
       expect(middle).toBeGreaterThan(alpha)
       expect(zeta).toBeGreaterThan(middle)
       expect(output).not.toContain("manual-skill")
+      expect(output).toContain("<name>router-skill</name>")
+      expect(output).not.toContain("<name>routed-child</name>")
+      expect(output).not.toContain("<name>explicit-skill</name>")
+    }),
+  )
+
+  it.effect("skills output promotes routed children whose router is denied", () =>
+    Effect.gen(function* () {
+      const prompt = yield* SystemPrompt.Service
+      const output = yield* prompt.skills({
+        ...build,
+        permission: Permission.fromConfig({ "*": "allow", skill: { "router-skill": "deny" } }),
+      })
+
+      expect(output).not.toContain("<name>router-skill</name>")
+      expect(output).toContain("<name>routed-child</name>")
+      expect(output).not.toContain("<name>explicit-skill</name>")
     }),
   )
 

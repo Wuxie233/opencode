@@ -2,6 +2,7 @@ import path from "path"
 import { Effect, Schema } from "effect"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Skill } from "../skill"
+import { Agent } from "../agent/agent"
 import * as Tool from "./tool"
 import DESCRIPTION from "./skill.txt"
 
@@ -13,6 +14,7 @@ export const SkillTool = Tool.define(
   "skill",
   Effect.gen(function* () {
     const skill = yield* Skill.Service
+    const agent = yield* Agent.Service
     const ripgrep = yield* Ripgrep.Service
 
     return {
@@ -33,6 +35,17 @@ export const SkillTool = Tool.define(
 
           const dir = path.dirname(info.location)
           const base = dir
+          const current = yield* skill.all()
+          const children = current.some(
+            (candidate) =>
+              candidate.description !== undefined &&
+              Skill.exposure(candidate) !== "explicit" &&
+              candidate.routers?.includes(info.name) === true,
+          )
+            ? Skill.children(yield* skill.available(yield* agent.get(ctx.agent)), info.name).toSorted((a, b) =>
+                a.name.localeCompare(b.name),
+              )
+            : []
           const files = yield* ripgrep.find({
             cwd: dir,
             pattern: "!**/SKILL.md",
@@ -57,6 +70,19 @@ export const SkillTool = Tool.define(
               "<skill_files>",
               files.map((file) => `<file>${path.resolve(dir, file.path)}</file>`).join("\n"),
               "</skill_files>",
+              ...(children.length === 0
+                ? []
+                : [
+                    "",
+                    "<routed_skills>",
+                    ...children.flatMap((child) => [
+                      "  <skill>",
+                      `    <name>${child.name}</name>`,
+                      `    <description>${child.description}</description>`,
+                      "  </skill>",
+                    ]),
+                    "</routed_skills>",
+                  ]),
               "</skill_content>",
             ].join("\n"),
             metadata: {

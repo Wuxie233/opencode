@@ -153,6 +153,7 @@ const table = sqliteTable("session", {
 - Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.
 - Root guidance includes root skills and fail-open routed skills whose permitted router path is missing, denied, explicit-only, or cyclic. Loading a router lists only its directly routed, permitted children; exact-name loading remains available for every registered skill.
 - Keep routed-skill selection derived from the current skill registry and agent permissions. Do not persist loaded-router state in sessions or expand routed children into global guidance.
+- Until legacy `SessionPrompt` is retired, keep Routed Skills frontmatter parsing, root guidance, tool catalogs, and focused tests aligned in both `packages/opencode` and Core V2; production Web/API sessions still use the legacy path.
 
 ## V2 Session Core
 

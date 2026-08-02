@@ -131,4 +131,91 @@ Use this skill.
       }
     }),
   )
+
+  it.instance("execute lists routed children and loads explicit skills by exact name", () =>
+    Effect.gen(function* () {
+      const dir = (yield* TestInstance).directory
+      const root = path.join(dir, ".opencode", "skill")
+      yield* Effect.promise(() =>
+        Promise.all([
+          Bun.write(
+            path.join(dir, "opencode.json"),
+            JSON.stringify({ permission: { skill: { "denied-child": "deny" } } }),
+          ),
+          Bun.write(
+            path.join(root, "router-skill", "SKILL.md"),
+            `---
+name: router-skill
+description: Router skill.
+exposure: root
+---
+
+# Router Skill`,
+          ),
+          Bun.write(
+            path.join(root, "routed-child", "SKILL.md"),
+            `---
+name: routed-child
+description: Routed child.
+routers:
+  - router-skill
+---
+
+# Routed Child`,
+          ),
+          Bun.write(
+            path.join(root, "explicit-skill", "SKILL.md"),
+            `---
+name: explicit-skill
+description: Explicit skill.
+routers:
+  - router-skill
+exposure: explicit
+---
+
+# Explicit Skill`,
+          ),
+          Bun.write(
+            path.join(root, "denied-child", "SKILL.md"),
+            `---
+name: denied-child
+description: Denied child.
+routers:
+  - router-skill
+---
+
+# Denied Child`,
+          ),
+        ]),
+      )
+
+      const home = process.env.OPENCODE_TEST_HOME
+      process.env.OPENCODE_TEST_HOME = dir
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          process.env.OPENCODE_TEST_HOME = home
+        }),
+      )
+
+      const registry = yield* ToolRegistry.Service
+      const agent = { name: "build", mode: "primary" as const, permission: [], options: {} }
+      const tool = (yield* registry.tools({
+        providerID: "opencode" as any,
+        modelID: "gpt-5" as any,
+        agent,
+      })).find((tool) => tool.id === SkillTool.id)
+      if (!tool) throw new Error("Skill tool not found")
+      const ctx: Tool.Context = { ...baseCtx, ask: () => Effect.void }
+
+      const router = yield* tool.execute({ name: "router-skill" }, ctx)
+      expect(router.output).toContain("<routed_skills>")
+      expect(router.output).toContain("<name>routed-child</name>")
+      expect(router.output).not.toContain("<name>denied-child</name>")
+      expect(router.output).not.toContain("<name>explicit-skill</name>")
+
+      const explicit = yield* tool.execute({ name: "explicit-skill" }, ctx)
+      expect(explicit.output).toContain('<skill_content name="explicit-skill">')
+      expect(explicit.output).not.toContain("<routed_skills>")
+    }),
+  )
 })
