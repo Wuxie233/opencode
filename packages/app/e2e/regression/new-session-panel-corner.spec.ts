@@ -39,7 +39,7 @@ test("matches the rounded panel corners to the dark new-session background", asy
         }),
       )
       localStorage.setItem(
-        "opencode.window.browser.dat:tabs",
+        "opencode.global.dat:tabs",
         JSON.stringify([{ type: "draft", draftID, server, directory }]),
       )
     },

@@ -1,8 +1,10 @@
 import { dict as en } from "./en"
+import { personalMessagesZht } from "@/personal/i18n"
 
 type Keys = keyof typeof en
 
 export const dict = {
+  ...personalMessagesZht,
   "desktop.menu.app": "OpenCode",
   "desktop.menu.file": "檔案",
   "desktop.menu.edit": "編輯",

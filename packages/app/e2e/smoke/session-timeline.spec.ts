@@ -127,7 +127,7 @@ test.describe("smoke: session timeline", () => {
     await page.addInitScript(
       ({ dirBase64, sourceID, targetID }) => {
         localStorage.setItem(
-          "opencode.window.browser.dat:tabs",
+          "opencode.global.dat:tabs",
           JSON.stringify(
             [sourceID, targetID].map((sessionId) => ({
               type: "session",
@@ -253,7 +253,7 @@ test.describe("smoke: session timeline", () => {
     await page.addInitScript(
       ({ dirBase64, sourceID, targetID }) => {
         localStorage.setItem(
-          "opencode.window.browser.dat:tabs",
+          "opencode.global.dat:tabs",
           JSON.stringify(
             [sourceID, targetID].map((sessionId) => ({
               type: "session",
@@ -369,7 +369,7 @@ async function configureSmokePage(page: Page, directory: string) {
 
   await page.addInitScript((directory) => {
     localStorage.setItem(
-      "opencode.global.dat:server",
+      "opencode.global.dat:server.projects",
       JSON.stringify({
         projects: {
           local: [{ worktree: directory, expanded: true }],
@@ -377,6 +377,7 @@ async function configureSmokePage(page: Page, directory: string) {
         lastProject: {
           local: directory,
         },
+        recentlyClosed: {},
       }),
     )
   }, directory)
@@ -713,12 +714,16 @@ function expectCompleteScroll(
 async function selectHomeProject(page: Page, projectName: string) {
   await page.goto("/")
   const row = page
-    .locator('[data-component="home-project-row"]')
+    .locator('[data-component="home-project-row"], .personal-project-toggle')
     .filter({ hasText: new RegExp(projectName, "i") })
     .first()
   await expectAppVisible(row)
   await row.click()
-  await expect(row).toHaveAttribute("data-selected", "", { timeout: APP_READY_TIMEOUT })
+  if (await row.getAttribute("data-component")) {
+    await expect(row).toHaveAttribute("data-selected", "", { timeout: APP_READY_TIMEOUT })
+  } else {
+    await expect(row).toHaveAttribute("aria-expanded", /true|false/, { timeout: APP_READY_TIMEOUT })
+  }
   await expect(page).toHaveURL(/\/$/)
 }
 

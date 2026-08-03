@@ -1,7 +1,9 @@
 import { DESKTOP_NATIVE_ENGLISH } from "./desktop-native"
+import { personalMessages } from "@/personal/i18n"
 
 export const dict = {
   ...DESKTOP_NATIVE_ENGLISH,
+  ...personalMessages,
   "command.category.suggested": "Suggested",
   "command.category.view": "View",
   "command.category.project": "Project",

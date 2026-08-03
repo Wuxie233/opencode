@@ -73,6 +73,7 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
   const params = useParams()
   const useV2Titlebar = createMemo(() => settings.general.newLayoutDesigns())
   const mobile = createMediaQuery("(max-width: 767px)")
+  const personalCompact = createMediaQuery("(max-width: 1079px)")
   const bottom = createMemo(() => useV2Titlebar() && mobile() && settings.general.mobileTitlebarPosition() === "bottom")
 
   const mac = createMemo(() => platform.platform === "desktop" && platform.os === "macos")
@@ -173,7 +174,8 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
       data-slot={useV2Titlebar() ? "titlebar-v2" : undefined}
       classList={{
         "shrink-0 relative flex flex-row": true,
-        "h-9 bg-v2-background-bg-deep overflow-visible": useV2Titlebar(),
+        "h-9 bg-v2-background-bg-deep overflow-visible": useV2Titlebar() && !personalCompact(),
+        "h-11 bg-v2-background-bg-deep overflow-visible": useV2Titlebar() && personalCompact(),
         "h-10 bg-background-base overflow-hidden": !useV2Titlebar(),
         "order-last": bottom(),
       }}
@@ -369,6 +371,23 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
                 }}
               >
                 <ChannelIndicator debugTools={props.debugTools} />
+                <Show when={personalCompact()}>
+                  <TooltipV2 placement="bottom" value={language.t("personal.navigation.open")}>
+                    <IconButtonV2
+                      id="personal-navigation-trigger"
+                      type="button"
+                      variant="ghost-muted"
+                      size="large"
+                      class="!size-11 shrink-0"
+                      icon={<IconV2 name="menu" />}
+                      onClick={layout.mobileSidebar.toggle}
+                      aria-label={language.t("personal.navigation.open")}
+                      title={language.t("personal.navigation.open")}
+                      aria-expanded={layout.mobileSidebar.opened()}
+                      aria-controls="personal-navigation-drawer"
+                    />
+                  </TooltipV2>
+                </Show>
                 <Show when={windows() || linux()}>
                   <WindowsAppMenu command={command} platform={platform} variant="v2" />
                 </Show>
