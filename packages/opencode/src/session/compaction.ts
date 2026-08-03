@@ -471,6 +471,7 @@ const layer = Layer.effect(
         model,
       })
       let result: "continue" | "stop" | "compact" | undefined
+      let persistedCompactionPart = compactionPart
       if (compactionPart) {
         const sourceSeq = yield* EventV2.latestSequence(db, input.sessionID)
         const previous = yield* canonical({
@@ -492,7 +493,8 @@ const layer = Layer.effect(
           canonicalInput: previous.input,
         })
         if (native) {
-          yield* session.updatePart({ ...compactionPart, provider: true, provider_source_seq: sourceSeq })
+          persistedCompactionPart = { ...compactionPart, provider: true, provider_source_seq: sourceSeq }
+          yield* session.updatePart(persistedCompactionPart)
           result = input.auto ? "continue" : "stop"
         }
       }
@@ -553,9 +555,13 @@ const layer = Layer.effect(
         return "stop"
       }
 
-      if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
+      if (
+        persistedCompactionPart &&
+        selected.tail_start_id &&
+        persistedCompactionPart.tail_start_id !== selected.tail_start_id
+      ) {
         yield* session.updatePart({
-          ...compactionPart,
+          ...persistedCompactionPart,
           tail_start_id: selected.tail_start_id,
         })
       }

@@ -891,6 +891,44 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
+    "preserves provider-native marker when persisting the retained tail",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({ model: { id: nativeRef.modelID, providerID: nativeRef.providerID } })
+      yield* createUserMessage(session.id, "first", nativeRef)
+      const keep = yield* createUserMessage(session.id, "second", nativeRef)
+      yield* createUserMessage(session.id, "third", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("stop")
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const part = saved.at(-1)?.parts.find((item) => item.type === "compaction")
+      expect(part).toMatchObject({
+        type: "compaction",
+        provider: true,
+        tail_start_id: keep.id,
+      })
+      expect(part?.type === "compaction" && part.provider_source_seq).toBeGreaterThanOrEqual(0)
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider.layer,
+        config: cfg({ tail_turns: 2, preserve_recent_tokens: 10_000 }),
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: (request) => Effect.succeed(compactResponse(request, [{ type: "compaction", encrypted_content: "opaque" }])),
+        }),
+      }),
+    ),
+  )
+
+  itCompaction.instance(
     "uses local compaction without calling the provider endpoint when mode is local",
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
