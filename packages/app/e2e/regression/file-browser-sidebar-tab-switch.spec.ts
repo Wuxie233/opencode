@@ -141,7 +141,7 @@ async function setup(page: Page) {
         JSON.stringify({ sidebarOpened: true, sidebarWidth: 240, expandMode: "collapse" }),
       )
       localStorage.setItem(
-        "opencode.window.browser.dat:tabs",
+        "opencode.global.dat:tabs",
         JSON.stringify([{ type: "session", server, sessionId: sessionID }]),
       )
     },

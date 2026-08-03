@@ -6,11 +6,11 @@
 ## Conventions
 
 - Keep styles scoped below `[data-personal-ui]` and reuse v2 semantic tokens.
-- Keep navigation projection pure and typed against the minimum native tab shape so unit tests do not load Solid Router.
-- Preserve the runtime fallback: `personal-ui=1` enables and persists Personal UI; `personal-ui=0` restores the upstream New Layout.
+- Keep navigation projection pure and typed against the minimum native tab, project, session, status, and request shapes so unit tests do not load Solid Router.
+- Personal UI is the unconditional native New Layout shell. Do not add a query flag, local-storage rollout switch, or visible upstream-layout fallback.
 
 ## Commands
 
-- `bun test src/personal/flag.test.ts src/personal/navigation.test.ts`
+- `bun test src/personal/projection.test.ts`
 - `bun run typecheck`
 - `bun run build`

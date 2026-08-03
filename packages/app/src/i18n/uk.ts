@@ -1,4 +1,7 @@
+import { personalMessages } from "@/personal/i18n"
+
 export const dict = {
+  ...personalMessages,
   "command.category.suggested": "Рекомендовані",
   "command.category.view": "Вигляд",
   "command.category.project": "Проєкт",
