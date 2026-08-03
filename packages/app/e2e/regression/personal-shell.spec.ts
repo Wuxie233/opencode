@@ -11,6 +11,14 @@ const project = {
   time: { created: 1, updated: 2 },
   sandboxes: [],
 }
+const emptyProject = {
+  id: "project-empty",
+  worktree: "C:/OpenCode/EmptyProject",
+  vcs: "git",
+  name: "Empty Project",
+  time: { created: 1, updated: 1 },
+  sandboxes: [],
+}
 const sessions = [
   session("ses_alpha", "Alpha session", 3),
   session("ses_beta", "Beta task", 2),
@@ -33,6 +41,7 @@ for (const mode of [
     await expect(rail.getByRole("button", { name: /Alpha session/ })).toBeVisible()
     await expect(rail.getByRole("button", { name: /Beta task/ })).toBeVisible()
     await expect(rail.getByRole("button", { name: /Closed history/ })).toHaveCount(0)
+    await expect(rail.getByRole("button", { name: /Empty Project/ })).toHaveCount(0)
 
     const search = rail.getByRole("searchbox", { name: "Search projects and sessions" })
     await search.fill("beta")
@@ -69,6 +78,7 @@ for (const mode of [
       await trigger.click()
       await expect(drawer).toBeVisible()
       await expect(drawer.getByRole("button", { name: /Alpha session/ })).toBeVisible()
+      await expect(drawer.getByRole("button", { name: /Empty Project/ })).toHaveCount(0)
       await expectDrawerGeometry(drawer, width)
       await expectNoHorizontalOverflow(page)
       await page.screenshot({ path: testInfo.outputPath(`personal-shell-${width}-${mode.name}.png`), fullPage: true })
@@ -82,7 +92,7 @@ for (const mode of [
 async function setup(page: Page, scheme: "light" | "dark") {
   await mockOpenCodeServer(page, {
     directory,
-    project,
+    project: [project, emptyProject],
     provider: { all: [], connected: [], default: {} },
     sessions,
     pageMessages: () => ({ items: [] }),
