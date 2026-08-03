@@ -18,7 +18,6 @@ import { errorMessage } from "@/pages/layout/helpers"
 import { showToast } from "@/utils/toast"
 import NewLayout from "@/pages/layout-new"
 import {
-  PERSONAL_RECENT_SESSION_LIMIT,
   personalDirectorySessionKey,
   personalProjection,
   type PersonalProjectGroup,
@@ -159,7 +158,6 @@ export default function PersonalLayout(props: ParentProps) {
         return { key, tab, title: tabs.info[key]?.title, directory: tabs.info[key]?.directory }
       }),
       route: layout.route(),
-      recentLimit: PERSONAL_RECENT_SESSION_LIMIT,
     })
   })
 

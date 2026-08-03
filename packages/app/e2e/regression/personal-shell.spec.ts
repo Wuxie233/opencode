@@ -11,7 +11,11 @@ const project = {
   time: { created: 1, updated: 2 },
   sandboxes: [],
 }
-const sessions = [session("ses_alpha", "Alpha session", 3), session("ses_beta", "Beta task", 2)]
+const sessions = [
+  session("ses_alpha", "Alpha session", 3),
+  session("ses_beta", "Beta task", 2),
+  session("ses_closed", "Closed history", 1),
+]
 
 for (const mode of [
   { name: "light-normal", scheme: "light" as const, reducedMotion: "no-preference" as const },
@@ -28,6 +32,7 @@ for (const mode of [
     await expect(rail.getByRole("button", { name: "Workspace" })).toHaveAttribute("aria-current", "page")
     await expect(rail.getByRole("button", { name: /Alpha session/ })).toBeVisible()
     await expect(rail.getByRole("button", { name: /Beta task/ })).toBeVisible()
+    await expect(rail.getByRole("button", { name: /Closed history/ })).toHaveCount(0)
 
     const search = rail.getByRole("searchbox", { name: "Search projects and sessions" })
     await search.fill("beta")
@@ -95,6 +100,13 @@ async function setup(page: Page, scheme: "light" | "dark") {
         }),
       )
       localStorage.setItem("opencode.global.dat:server", JSON.stringify({ list: [], active: server }))
+      localStorage.setItem(
+        "opencode.global.dat:tabs",
+        JSON.stringify([
+          { type: "session", server, sessionId: "ses_alpha" },
+          { type: "session", server, sessionId: "ses_beta" },
+        ]),
+      )
     },
     { directory, scheme, server },
   )

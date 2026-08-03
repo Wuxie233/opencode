@@ -7,6 +7,7 @@
 
 - Keep styles scoped below `[data-personal-ui]` and reuse v2 semantic tokens.
 - Keep navigation projection pure and typed against the minimum native tab, project, session, status, and request shapes so unit tests do not load Solid Router.
+- Project groups contain only native open tabs and drafts. Closed history may feed the separate blocking projection but must not appear as an open session row.
 - Personal UI is the unconditional native New Layout shell. Do not add a query flag, local-storage rollout switch, or visible upstream-layout fallback.
 
 ## Commands
