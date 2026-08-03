@@ -94,7 +94,10 @@ describe("personalProjection", () => {
           ],
         }),
       ],
-      tabs: [],
+      tabs: [
+        { key: "app-tab", tab: { type: "session", server: serverA, sessionId: "ses_1" }, directory: "/work/app" },
+        { key: "api-tab", tab: { type: "session", server: serverA, sessionId: "ses_1" }, directory: "/work/api" },
+      ],
       route: { type: "home" },
     })
 
@@ -124,7 +127,9 @@ describe("personalProjection", () => {
           questions: { [personalDirectorySessionKey("/work/app", "question")]: 2 },
         }),
       ],
-      tabs: [],
+      tabs: [
+        { key: "unknown-tab", tab: { type: "session", server: serverA, sessionId: "unknown" }, directory: "/work/app" },
+      ],
       route: { type: "home" },
     })
 
@@ -149,7 +154,7 @@ describe("personalProjection", () => {
     expect(result.blocking.map((item) => item.kind)).toEqual(["question", "retry"])
   })
 
-  test("bounds closed history but keeps every open tab", () => {
+  test("shows only open tabs in project groups while retaining closed blockers", () => {
     const sessions = Array.from({ length: 6 }, (_, index) => ({
       id: `ses_${index}`,
       directory: "/work/app",
@@ -162,14 +167,16 @@ describe("personalProjection", () => {
       directory: session.directory,
     }))
     const result = personalProjection({
-      servers: [source({ sessions })],
+      servers: [source({
+        sessions,
+        questions: { [personalDirectorySessionKey("/work/app", "ses_5")]: 1 },
+      })],
       tabs,
       route: { type: "home" },
-      recentLimit: 2,
     })
 
-    expect(result.projects[0]?.sessions).toHaveLength(4)
-    expect(result.projects[0]?.sessions.filter((item) => item.open)).toHaveLength(2)
+    expect(result.projects[0]?.sessions.map((item) => item.sessionId)).toEqual(["ses_1", "ses_0"])
+    expect(result.blocking.map((item) => [item.kind, item.session.sessionId])).toEqual([["question", "ses_5"]])
   })
 
   test("isolates status and pending work for duplicate session IDs across directories", () => {
@@ -188,7 +195,10 @@ describe("personalProjection", () => {
           questions: { [personalDirectorySessionKey("/work/api", "ses_1")]: 1 },
         }),
       ],
-      tabs: [],
+      tabs: [
+        { key: "app-tab", tab: { type: "session", server: serverA, sessionId: "ses_1" }, directory: "/work/app" },
+        { key: "api-tab", tab: { type: "session", server: serverA, sessionId: "ses_1" }, directory: "/work/api" },
+      ],
       route: { type: "home" },
     })
 

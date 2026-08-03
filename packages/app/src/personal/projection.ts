@@ -91,8 +91,6 @@ export type PersonalProjection = {
   blocking: PersonalBlockingItem[]
 }
 
-export const PERSONAL_RECENT_SESSION_LIMIT = 12
-
 export function personalDirectorySessionKey(directory: string, sessionID: string) {
   return `${pathKey(directory)}\0${sessionID}`
 }
@@ -105,14 +103,12 @@ export function personalProjection(input: {
   servers: ReadonlyArray<PersonalServerSource>
   tabs: ReadonlyArray<PersonalTabSource>
   route: PersonalRoute
-  recentLimit?: number
 }): PersonalProjection {
-  const recentLimit = input.recentLimit ?? PERSONAL_RECENT_SESSION_LIMIT
   const tabsByServer = Map.groupBy(input.tabs, (item) => item.tab.server)
-  const projects = input.servers.flatMap((server) =>
-    projectServer(server, tabsByServer.get(server.key) ?? [], input.route, recentLimit),
+  const projected = input.servers.flatMap((server) =>
+    projectServer(server, tabsByServer.get(server.key) ?? [], input.route),
   )
-  const blocking = projects
+  const blocking = projected
     .flatMap((project) =>
       project.sessions.flatMap((session) => {
         const items: PersonalBlockingItem[] = []
@@ -140,6 +136,10 @@ export function personalProjection(input: {
       }),
     )
     .sort((a, b) => blockingRank(a.kind) - blockingRank(b.kind) || b.session.updated - a.session.updated)
+  const projects = projected.map((project) => ({
+    ...project,
+    sessions: project.sessions.filter((session) => session.open),
+  }))
 
   const histories = input.servers.map((server) => server.historyState)
   const directories = projects.map((project) => project.dataState)
@@ -158,7 +158,6 @@ function projectServer(
   server: PersonalServerSource,
   tabs: ReadonlyArray<PersonalTabSource>,
   route: PersonalRoute,
-  recentLimit: number,
 ) {
   const sources = new Map(server.sessions.map((session) => [session.id, session] as const))
   const claimedTabs = new Set<string>()
@@ -178,7 +177,7 @@ function projectServer(
       claimedTabs.add(item.key)
       return true
     })
-    return makeProject(server, project, projectSessions, projectTabs, route, recentLimit)
+    return makeProject(server, project, projectSessions, projectTabs, route)
   })
 
   const unclaimed = tabs.filter((item) => !claimedTabs.has(item.key))
@@ -197,7 +196,6 @@ function projectServer(
         [],
         items,
         route,
-        recentLimit,
       ),
     )
   }
@@ -210,7 +208,6 @@ function makeProject(
   sessions: ReadonlyArray<PersonalSessionSource>,
   tabs: ReadonlyArray<PersonalTabSource>,
   route: PersonalRoute,
-  recentLimit: number,
 ): PersonalProjectGroup {
   const sessionTabs = tabs.filter((item) => item.tab.type === "session")
   const rows = new Map<string, PersonalSessionItem>()
@@ -270,8 +267,6 @@ function makeProject(
   const ordered = [...rows.values()].sort(
     (a, b) => Number(b.active) - Number(a.active) || Number(b.open) - Number(a.open) || b.updated - a.updated,
   )
-  const open = ordered.filter((item) => item.open)
-  const recent = ordered.filter((item) => !item.open).slice(0, recentLimit)
   return {
     key: `${server.key}\0${pathKey(project.directory)}`,
     server: server.key,
@@ -281,7 +276,7 @@ function makeProject(
     name: project.name,
     expanded: project.expanded,
     dataState: project.dataState,
-    sessions: [...open, ...recent],
+    sessions: ordered,
   }
 }
 
