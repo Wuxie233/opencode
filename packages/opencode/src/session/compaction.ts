@@ -362,7 +362,16 @@ const layer = Layer.effect(
         })
         if (!current || current.sourceSeq !== markerPart.provider_source_seq)
           return { messages: input.messages }
-        return { messages: input.messages.slice(markerIndex + 1), input: current.items }
+        const tailIndex = markerPart.tail_start_id
+          ? input.messages.findIndex((message, index) => index < markerIndex && message.info.id === markerPart.tail_start_id)
+          : -1
+        return {
+          messages:
+            tailIndex < 0
+              ? input.messages.slice(markerIndex + 1)
+              : [...input.messages.slice(tailIndex, markerIndex), ...input.messages.slice(markerIndex + 1)],
+          input: current.items,
+        }
       }).pipe(Effect.catch(() => Effect.succeed({ messages: input.messages })))
     })
 
