@@ -1659,4 +1659,52 @@ describe("session.message-v2.latest", () => {
     expect(state.tasks).toHaveLength(1)
     expect(state.tasks[0]).toMatchObject({ type: "compaction", auto: true })
   })
+
+  test("provider compaction consumes pre-compaction overflow usage", () => {
+    const nativeCompaction: SessionV1.WithParts = {
+      info: userInfo(COMPACTION_USER),
+      parts: [
+        {
+          ...basePart(COMPACTION_USER, "p1"),
+          type: "compaction",
+          auto: true,
+          provider: true,
+          provider_source_seq: 42,
+        },
+      ] as SessionV1.Part[],
+    }
+
+    const state = MessageV2.latest([tailUser, overflowAssistant, nativeCompaction, continueUser])
+
+    expect(state.finished?.id).toBe(OVERFLOW_ASSISTANT)
+    expect(state.overflow).toBeUndefined()
+    expect(state.tasks).toEqual([])
+  })
+
+  test("assistant usage after provider compaction remains eligible for overflow", () => {
+    const nativeCompaction: SessionV1.WithParts = {
+      info: userInfo(COMPACTION_USER),
+      parts: [
+        {
+          ...basePart(COMPACTION_USER, "p1"),
+          type: "compaction",
+          auto: true,
+          provider: true,
+          provider_source_seq: 42,
+        },
+      ] as SessionV1.Part[],
+    }
+    const nextAssistant: SessionV1.WithParts = {
+      info: {
+        ...assistantInfo(MessageID.make("msg_007"), CONTINUE_USER),
+        finish: "tool-calls",
+        tokens: { input: 280_000, output: 200, reasoning: 0, cache: { read: 0, write: 0 }, total: 280_200 },
+      } as SessionV1.Assistant,
+      parts: [],
+    }
+
+    const state = MessageV2.latest([tailUser, overflowAssistant, nativeCompaction, continueUser, nextAssistant])
+
+    expect(state.overflow?.id).toBe(nextAssistant.info.id)
+  })
 })

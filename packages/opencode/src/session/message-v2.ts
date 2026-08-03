@@ -614,11 +614,18 @@ export function latest(msgs: WithParts[]) {
   let user: User | undefined
   let assistant: Assistant | undefined
   let finished: Assistant | undefined
+  let providerCompaction: User | undefined
   for (const msg of msgs) {
     const info = msg.info
     if (info.role === "user" && (!user || newer(info, user))) user = info
     if (info.role === "assistant" && (!assistant || newer(info, assistant))) assistant = info
     if (info.role === "assistant" && info.finish && (!finished || newer(info, finished))) finished = info
+    if (
+      info.role === "user" &&
+      msg.parts.some((part) => part.type === "compaction" && part.provider === true) &&
+      (!providerCompaction || newer(info, providerCompaction))
+    )
+      providerCompaction = info
   }
   const tasks = msgs.flatMap((m) =>
     finished && olderOrSame(m.info, finished)
@@ -628,7 +635,8 @@ export function latest(msgs: WithParts[]) {
             (p.type === "compaction" && p.provider !== true) || p.type === "subtask",
         ),
   )
-  return { user, assistant, finished, tasks }
+  const overflow = finished && (!providerCompaction || newer(finished, providerCompaction)) ? finished : undefined
+  return { user, assistant, finished, overflow, tasks }
 }
 
 export function fromError(
