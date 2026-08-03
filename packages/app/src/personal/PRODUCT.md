@@ -30,7 +30,7 @@ Quiet, precise, dependable. The interface should feel like a compact professiona
 - Keep projects, sessions, conversation, activity, review, and terminal context visible without page hopping.
 - Use compact density for scanning while preserving readable message content.
 - Put blocking questions, permissions, errors, retries, and active work ahead of passive history.
-- Preserve a one-step return to the upstream layout during the gray rollout.
+- Keep the upstream New Layout as the behavior foundation while Personal UI owns the daily presentation.
 
 ## Accessibility & Inclusion
 

@@ -24,7 +24,7 @@ At tablet and mobile widths, persistent side regions collapse into the existing 
 - Personal components live under `packages/app/src/personal/` and accept native context data rather than creating another store.
 - The shell owns composition, scoped tokens, and presentation only.
 - Questions, permissions, composer docks, message timeline, review, file tree, terminal, tabs, settings, models, providers, and MCP retain their native behavior implementations.
-- The gray switch is runtime-selectable and keeps the upstream New Layout available without rebuilding.
+- Personal UI is the native New Layout presentation; no duplicate fallback control is shown in the workspace.
 
 ## Motion
 
