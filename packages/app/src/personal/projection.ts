@@ -136,10 +136,10 @@ export function personalProjection(input: {
       }),
     )
     .sort((a, b) => blockingRank(a.kind) - blockingRank(b.kind) || b.session.updated - a.session.updated)
-  const projects = projected.map((project) => ({
-    ...project,
-    sessions: project.sessions.filter((session) => session.open),
-  }))
+  const projects = projected.flatMap((project) => {
+    const sessions = project.sessions.filter((session) => session.open)
+    return sessions.length > 0 ? [{ ...project, sessions }] : []
+  })
 
   const histories = input.servers.map((server) => server.historyState)
   const directories = projects.map((project) => project.dataState)

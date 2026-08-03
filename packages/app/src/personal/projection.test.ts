@@ -179,6 +179,16 @@ describe("personalProjection", () => {
     expect(result.blocking.map((item) => [item.kind, item.session.sessionId])).toEqual([["question", "ses_5"]])
   })
 
+  test("hides project groups without open tabs", () => {
+    const result = personalProjection({
+      servers: [source()],
+      tabs: [],
+      route: { type: "home" },
+    })
+
+    expect(result.projects).toEqual([])
+  })
+
   test("isolates status and pending work for duplicate session IDs across directories", () => {
     const result = personalProjection({
       servers: [

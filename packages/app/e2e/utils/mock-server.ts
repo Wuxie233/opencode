@@ -29,6 +29,8 @@ export interface MockServerConfig {
 export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
   const cursors = new Map<string, string>()
   let nextCursor = 0
+  const projects = Array.isArray(config.project) ? config.project : [config.project]
+  const currentProject = projects[0]
   const staticRoutes: Record<string, unknown> = {
     "/provider": config.provider,
     "/path": {
@@ -38,8 +40,8 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
       directory: config.directory,
       home: "C:/OpenCode",
     },
-    "/project": [config.project],
-    "/project/current": config.project,
+    "/project": projects,
+    "/project/current": currentProject,
     "/agent": [{ name: "build", mode: "primary" }],
     "/vcs": { branch: "main", default_branch: "main" },
     "/session": config.sessions,
@@ -85,7 +87,7 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
       return json(route, {
         location: {
           directory: config.directory,
-          project: { id: (config.project as { id?: string }).id, directory: config.directory },
+          project: { id: (currentProject as { id?: string }).id, directory: config.directory },
         },
         data: [],
       })
@@ -100,7 +102,7 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
     }
 
     const projectMatch = path.match(/^\/project\/([^/]+)$/)
-    if (projectMatch) return json(route, config.project)
+    if (projectMatch) return json(route, projects.find((project) => (project as { id?: string }).id === projectMatch[1]) ?? currentProject)
 
     const messageMatch = path.match(/^\/session\/([^/]+)\/message\/([^/]+)$/)
     if (messageMatch) {
