@@ -148,6 +148,10 @@ const table = sqliteTable("session", {
 
 - Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
 
+## Local Runtime Staging
+
+- After verified OpenCode core changes intended for this host, build an immutable runtime release and atomically stage `/opt/opencode-runtime/bin/opencode` by default so the user's next manual restart loads it. Never restart OpenCode automatically. Skip staging only when the user explicitly requests source-only work or when a build/deployment blocker is reported.
+
 ## Routed Skills
 
 - Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.
