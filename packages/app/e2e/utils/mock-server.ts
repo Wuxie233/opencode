@@ -28,6 +28,8 @@ export interface MockServerConfig {
   fileContent?: (path: string) => unknown | Promise<unknown>
   findFiles?: (input: { query: string; dirs?: string; limit?: number }) => unknown
   sessionStatus?: Record<string, unknown> | (() => Record<string, unknown>)
+  onSessionUpdate?: (input: { sessionID: string; body: unknown }) => void | Promise<void>
+  sessionUpdateStatus?: number | ((input: { sessionID: string; body: unknown }) => number)
 }
 
 export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
@@ -257,6 +259,15 @@ export async function mockOpenCodeServer(page: Page, config: MockServerConfig) {
     const sessionMatch = path.match(/^\/session\/([^/]+)$/)
     if (sessionMatch) {
       const session = config.sessions.find((s) => s.id === sessionMatch[1])
+      if (route.request().method() === "PATCH") {
+        const body = route.request().postDataJSON()
+        await config.onSessionUpdate?.({ sessionID: sessionMatch[1]!, body })
+        const status =
+          typeof config.sessionUpdateStatus === "function"
+            ? config.sessionUpdateStatus({ sessionID: sessionMatch[1]!, body })
+            : (config.sessionUpdateStatus ?? 200)
+        if (status >= 400) return json(route, { error: "Session update failed" }, undefined, status)
+      }
       return json(route, session ?? {})
     }
 

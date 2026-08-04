@@ -28,6 +28,7 @@ function source(patch: Partial<PersonalServerSource> = {}): PersonalServerSource
     status: {},
     questions: {},
     permissions: {},
+    notifications: {},
     ...patch,
   }
 }
@@ -80,6 +81,29 @@ describe("personalProjection", () => {
     })
   })
 
+  test("keeps session order stable when the active route changes", () => {
+    const input = {
+      servers: [
+        source({
+          sessions: [
+            { id: "ses_alpha", directory: "/work/app", title: "Alpha", updated: 3 },
+            { id: "ses_beta", directory: "/work/app", title: "Beta", updated: 2 },
+          ],
+        }),
+      ],
+      tabs: [
+        { key: "alpha", tab: { type: "session" as const, server: serverA, sessionId: "ses_alpha" }, directory: "/work/app" },
+        { key: "beta", tab: { type: "session" as const, server: serverA, sessionId: "ses_beta" }, directory: "/work/app" },
+      ],
+    }
+
+    const alpha = personalProjection({ ...input, route: { type: "session", sessionId: "ses_alpha" } })
+    const beta = personalProjection({ ...input, route: { type: "session", sessionId: "ses_beta" } })
+
+    expect(alpha.projects[0]?.sessions.map((item) => item.sessionId)).toEqual(["ses_alpha", "ses_beta"])
+    expect(beta.projects[0]?.sessions.map((item) => item.sessionId)).toEqual(["ses_alpha", "ses_beta"])
+  })
+
   test("keeps same-server session IDs separate across directories", () => {
     const result = personalProjection({
       servers: [
@@ -107,7 +131,7 @@ describe("personalProjection", () => {
     ])
   })
 
-  test("orders blocking work and does not call unloaded directories idle", () => {
+  test("orders attention while runtime states remain in project groups", () => {
     const result = personalProjection({
       servers: [
         source({
@@ -128,17 +152,20 @@ describe("personalProjection", () => {
         }),
       ],
       tabs: [
+        { key: "busy-tab", tab: { type: "session", server: serverA, sessionId: "busy" }, directory: "/work/app" },
+        { key: "retry-tab", tab: { type: "session", server: serverA, sessionId: "retry" }, directory: "/work/app" },
         { key: "unknown-tab", tab: { type: "session", server: serverA, sessionId: "unknown" }, directory: "/work/app" },
       ],
       route: { type: "home" },
     })
 
     expect(result.state).toBe("partial")
-    expect(result.blocking.map((item) => item.kind)).toEqual(["question", "permission", "retry", "busy"])
+    expect(result.attention.map((item) => item.kind)).toEqual(["question", "permission"])
+    expect(result.projects[0]?.sessions.map((item) => item.state)).toEqual(["busy", "retry", "unknown"])
     expect(result.projects[0]?.sessions.find((item) => item.sessionId === "unknown")?.state).toBe("unknown")
   })
 
-  test("keeps runtime blockers when a question is also pending", () => {
+  test("deduplicates attention when a question is also retrying", () => {
     const result = personalProjection({
       servers: [
         source({
@@ -151,7 +178,7 @@ describe("personalProjection", () => {
       route: { type: "home" },
     })
 
-    expect(result.blocking.map((item) => item.kind)).toEqual(["question", "retry"])
+    expect(result.attention.map((item) => item.kind)).toEqual(["question"])
   })
 
   test("shows only open tabs in project groups while retaining closed blockers", () => {
@@ -176,7 +203,7 @@ describe("personalProjection", () => {
     })
 
     expect(result.projects[0]?.sessions.map((item) => item.sessionId)).toEqual(["ses_1", "ses_0"])
-    expect(result.blocking.map((item) => [item.kind, item.session.sessionId])).toEqual([["question", "ses_5"]])
+    expect(result.attention.map((item) => [item.kind, item.session.sessionId])).toEqual([["question", "ses_5"]])
   })
 
   test("hides project groups without open tabs", () => {
@@ -212,11 +239,43 @@ describe("personalProjection", () => {
       route: { type: "home" },
     })
 
-    expect(result.projects[0]?.sessions[0]).toMatchObject({ state: "busy", questionCount: 0 })
-    expect(result.projects[1]?.sessions[0]).toMatchObject({ state: "question", questionCount: 1 })
-    expect(result.blocking.map((item) => [item.kind, item.project.directory])).toEqual([
-      ["question", "/work/api"],
-      ["busy", "/work/app"],
+    expect(result.projects.find((item) => item.directory === "/work/app")?.sessions[0]).toMatchObject({
+      state: "busy",
+      questionCount: 0,
+    })
+    expect(result.projects.find((item) => item.directory === "/work/api")).toBeUndefined()
+    expect(result.attention.map((item) => [item.kind, item.project.directory])).toEqual([["question", "/work/api"]])
+  })
+
+  test("moves directory-scoped unread results to attention until viewed", () => {
+    const result = personalProjection({
+      servers: [
+        source({
+          projects: [
+            { id: "project-a", directory: "/work/app", name: "App", expanded: true, dataState: "complete" },
+            { id: "project-b", directory: "/work/api", name: "API", expanded: true, dataState: "complete" },
+          ],
+          sessions: [
+            { id: "ses_1", directory: "/work/app", projectID: "project-a", title: "Done", updated: 10 },
+            { id: "ses_1", directory: "/work/api", projectID: "project-b", title: "Failed", updated: 9 },
+          ],
+          notifications: {
+            [personalDirectorySessionKey("/work/app", "ses_1")]: { count: 1, hasError: false },
+            [personalDirectorySessionKey("/work/api", "ses_1")]: { count: 2, hasError: true },
+          },
+        }),
+      ],
+      tabs: [
+        { key: "app-tab", tab: { type: "session", server: serverA, sessionId: "ses_1" }, directory: "/work/app" },
+        { key: "api-tab", tab: { type: "session", server: serverA, sessionId: "ses_1" }, directory: "/work/api" },
+      ],
+      route: { type: "home" },
+    })
+
+    expect(result.projects).toEqual([])
+    expect(result.attention.map((item) => [item.kind, item.project.directory, item.count])).toEqual([
+      ["error", "/work/api", 2],
+      ["complete", "/work/app", 1],
     ])
   })
 })

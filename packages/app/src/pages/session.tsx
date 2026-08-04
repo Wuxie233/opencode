@@ -297,19 +297,28 @@ function TargetServerScopedProviders(
 ) {
   return (
     <>
-      <MarkSessionNotificationsViewed sessionID={props.sessionID} />
+      <MarkSessionNotificationsViewed directory={props.directory} sessionID={props.sessionID} />
       <ModelsProvider directory={props.directory}>{props.children}</ModelsProvider>
     </>
   )
 }
 
-function MarkSessionNotificationsViewed(props: { sessionID?: () => string | undefined }) {
+function MarkSessionNotificationsViewed(props: {
+  directory?: () => string | undefined
+  sessionID?: () => string | undefined
+}) {
   const notification = useNotification()
   createEffect(() => {
     const sessionID = props.sessionID?.()
+    const directory = props.directory?.()
     if (!notification.ready() || !sessionID) return
-    if (notification.session.unseenCount(sessionID) === 0) return
-    notification.session.markViewed(sessionID)
+    if (!directory) {
+      if (notification.session.unseenCount(sessionID) === 0) return
+      notification.session.markViewed(sessionID)
+      return
+    }
+    if (notification.session.unseenInDirectory(sessionID, directory).length === 0) return
+    notification.session.markViewedInDirectory(sessionID, directory)
   })
   return null
 }
