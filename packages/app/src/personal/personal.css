@@ -30,7 +30,7 @@
 
 [data-personal-ui] .personal-rail-content {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 [data-personal-ui] .personal-rail-heading {
@@ -262,6 +262,30 @@
   font-size: 12px;
 }
 
+[data-personal-ui] .personal-session-editor {
+  min-width: 0;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px 4px 8px;
+}
+
+[data-personal-ui] .personal-session-editor input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--v2-border-border-focus);
+  border-radius: 4px;
+  outline: 1px solid var(--v2-border-border-focus);
+  color: var(--v2-text-text-base);
+  background: var(--v2-background-bg-base);
+  font: inherit;
+  font-size: 12px;
+}
+
 [data-personal-ui] .personal-session-button > span:nth-child(2),
 [data-personal-ui] .personal-session-button > small {
   overflow: hidden;
@@ -294,11 +318,16 @@
 }
 
 [data-personal-ui] .personal-session-state[data-state="permission"],
-[data-personal-ui] .personal-session-state[data-state="retry"] {
+[data-personal-ui] .personal-session-state[data-state="retry"],
+[data-personal-ui] .personal-session-state[data-state="error"] {
   background: var(--v2-yellow-700);
 }
 
 [data-personal-ui] .personal-session-state[data-state="busy"] {
+  background: var(--v2-green-700);
+}
+
+[data-personal-ui] .personal-session-state[data-state="complete"] {
   background: var(--v2-green-700);
 }
 
@@ -329,6 +358,19 @@
   line-height: 1.5;
 }
 
+[data-personal-ui] .personal-rail-footer {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-top: 1px solid var(--personal-border);
+}
+
+[data-personal-ui] .personal-settings-button:focus-visible {
+  outline: 2px solid var(--v2-border-border-focus);
+  outline-offset: -2px;
+}
+
 [data-personal-ui] .personal-project-state {
   margin: 4px 8px 0 21px;
 }
@@ -344,6 +386,20 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  position: relative;
+}
+
+[data-personal-ui] .personal-route-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--v2-text-text-muted);
+  background: var(--v2-background-bg-deep);
+  font-size: 12px;
 }
 
 [data-personal-ui].personal-drawer {
@@ -386,6 +442,7 @@
   [data-personal-ui] .personal-project-heading,
   [data-personal-ui] .personal-project-toggle,
   [data-personal-ui] .personal-session-button,
+  [data-personal-ui] .personal-session-editor,
   [data-personal-ui] .personal-blocking-button {
     min-height: 44px;
   }
@@ -394,6 +451,11 @@
     width: 44px;
     height: 44px;
     opacity: 1;
+  }
+
+  [data-personal-ui] .personal-settings-button {
+    width: 44px;
+    height: 44px;
   }
 
   [data-personal-ui] .personal-project-new {

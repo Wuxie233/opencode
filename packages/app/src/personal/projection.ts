@@ -35,6 +35,7 @@ export type PersonalServerSource = {
   status: Readonly<Record<string, "idle" | "retry" | "busy" | undefined>>
   questions: Readonly<Record<string, number | undefined>>
   permissions: Readonly<Record<string, number | undefined>>
+  notifications: Readonly<Record<string, { count: number; hasError: boolean } | undefined>>
 }
 
 export type PersonalTabSource = {
@@ -44,7 +45,16 @@ export type PersonalTabSource = {
   directory?: string
 }
 
-export type PersonalSessionState = "draft" | "question" | "permission" | "retry" | "busy" | "idle" | "unknown"
+export type PersonalSessionState =
+  | "draft"
+  | "question"
+  | "permission"
+  | "error"
+  | "complete"
+  | "retry"
+  | "busy"
+  | "idle"
+  | "unknown"
 
 export type PersonalSessionItem = {
   key: string
@@ -63,6 +73,8 @@ export type PersonalSessionItem = {
   runtimeState?: "idle" | "retry" | "busy"
   questionCount: number
   permissionCount: number
+  notificationCount: number
+  notificationHasError: boolean
 }
 
 export type PersonalProjectGroup = {
@@ -77,9 +89,9 @@ export type PersonalProjectGroup = {
   sessions: PersonalSessionItem[]
 }
 
-export type PersonalBlockingItem = {
+export type PersonalAttentionItem = {
   key: string
-  kind: "question" | "permission" | "retry" | "busy"
+  kind: "question" | "permission" | "error" | "complete"
   count: number
   session: PersonalSessionItem
   project: PersonalProjectGroup
@@ -88,7 +100,7 @@ export type PersonalBlockingItem = {
 export type PersonalProjection = {
   state: "loading" | "partial" | "complete" | "error"
   projects: PersonalProjectGroup[]
-  blocking: PersonalBlockingItem[]
+  attention: PersonalAttentionItem[]
 }
 
 export function personalDirectorySessionKey(directory: string, sessionID: string) {
@@ -108,36 +120,23 @@ export function personalProjection(input: {
   const projected = input.servers.flatMap((server) =>
     projectServer(server, tabsByServer.get(server.key) ?? [], input.route),
   )
-  const blocking = projected
+  const attention = projected
     .flatMap((project) =>
       project.sessions.flatMap((session) => {
-        const items: PersonalBlockingItem[] = []
-        if (session.questionCount > 0)
-          items.push({
-            key: `question:${session.key}`,
-            kind: "question",
-            count: session.questionCount,
-            session,
-            project,
-          })
-        if (session.permissionCount > 0)
-          items.push({
-            key: `permission:${session.key}`,
-            kind: "permission",
-            count: session.permissionCount,
-            session,
-            project,
-          })
-        if (session.runtimeState === "retry")
-          items.push({ key: `retry:${session.key}`, kind: "retry", count: 1, session, project })
-        if (session.runtimeState === "busy")
-          items.push({ key: `busy:${session.key}`, kind: "busy", count: 1, session, project })
-        return items
+        const kind = attentionKind(session)
+        if (!kind) return []
+        const count =
+          kind === "question"
+            ? session.questionCount
+            : kind === "permission"
+              ? session.permissionCount
+              : session.notificationCount
+        return [{ key: session.key, kind, count, session, project }]
       }),
     )
-    .sort((a, b) => blockingRank(a.kind) - blockingRank(b.kind) || b.session.updated - a.session.updated)
+    .sort((a, b) => attentionRank(a.kind) - attentionRank(b.kind) || b.session.updated - a.session.updated)
   const projects = projected.flatMap((project) => {
-    const sessions = project.sessions.filter((session) => session.open)
+    const sessions = project.sessions.filter((session) => session.open && !attentionKind(session))
     return sessions.length > 0 ? [{ ...project, sessions }] : []
   })
 
@@ -151,7 +150,7 @@ export function personalProjection(input: {
         ? "partial"
         : "complete"
 
-  return { state, projects, blocking }
+  return { state, projects, attention }
 }
 
 function projectServer(
@@ -229,7 +228,8 @@ function makeProject(
       questionCount === 0 &&
       permissionCount === 0 &&
       status !== "retry" &&
-      status !== "busy"
+      status !== "busy" &&
+      !server.notifications[sessionKey]?.count
     )
       continue
     const item = sessionItem(server, project, session, tab, route)
@@ -265,7 +265,7 @@ function makeProject(
   }
 
   const ordered = [...rows.values()].sort(
-    (a, b) => Number(b.active) - Number(a.active) || Number(b.open) - Number(a.open) || b.updated - a.updated,
+    (a, b) => Number(b.open) - Number(a.open) || b.updated - a.updated,
   )
   return {
     key: `${server.key}\0${pathKey(project.directory)}`,
@@ -291,6 +291,7 @@ function sessionItem(
   const questionCount = server.questions[sessionKey] ?? 0
   const permissionCount = server.permissions[sessionKey] ?? 0
   const status = server.status[sessionKey]
+  const notifications = server.notifications[sessionKey]
   const state =
     questionCount > 0
       ? "question"
@@ -303,6 +304,15 @@ function sessionItem(
             : project.dataState === "complete"
               ? "idle"
               : "unknown"
+  const attention = questionCount > 0
+    ? "question"
+    : permissionCount > 0
+      ? "permission"
+      : notifications?.hasError
+        ? "error"
+        : notifications?.count
+          ? "complete"
+          : undefined
   const directory = tab?.directory || source.directory
   return {
     key: personalIdentity(server.key, directory, source.id),
@@ -319,10 +329,12 @@ function sessionItem(
       route.sessionId === source.id &&
       (route.server === undefined || route.server === server.key),
     open: !!tab,
-    state,
+    state: attention ?? state,
     runtimeState: status,
     questionCount,
     permissionCount,
+    notificationCount: notifications?.count ?? 0,
+    notificationHasError: notifications?.hasError ?? false,
   }
 }
 
@@ -353,6 +365,8 @@ function draftItem(
     runtimeState: undefined,
     questionCount: 0,
     permissionCount: 0,
+    notificationCount: 0,
+    notificationHasError: false,
   }
 }
 
@@ -361,9 +375,16 @@ function tabDirectory(tab: PersonalTabSource, sessions: ReadonlyMap<string, Pers
   return tab.directory || sessions.get(tab.tab.sessionId)?.directory || ""
 }
 
-function blockingRank(kind: PersonalBlockingItem["kind"]) {
+function attentionKind(session: PersonalSessionItem): PersonalAttentionItem["kind"] | undefined {
+  if (session.questionCount > 0) return "question"
+  if (session.permissionCount > 0) return "permission"
+  if (session.notificationHasError) return "error"
+  if (session.notificationCount > 0) return "complete"
+}
+
+function attentionRank(kind: PersonalAttentionItem["kind"]) {
   if (kind === "question") return 0
   if (kind === "permission") return 1
-  if (kind === "retry") return 2
+  if (kind === "error") return 2
   return 3
 }

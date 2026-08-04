@@ -187,6 +187,10 @@ export const { use: useNotification, provider: NotificationProvider } = createSi
         unseenCount: (session: string) => selected().session.unseenCount(session),
         unseenHasError: (session: string) => selected().session.unseenHasError(session),
         markViewed: (session: string) => selected().session.markViewed(session),
+        unseenInDirectory: (session: string, directory: string) =>
+          selected().session.unseenInDirectory(session, directory),
+        markViewedInDirectory: (session: string, directory: string) =>
+          selected().session.markViewedInDirectory(session, directory),
       },
       project: {
         all: (directory: string) => selected().project.all(directory),
@@ -432,6 +436,34 @@ function createServerNotificationState(input: {
             )
             updateUnseen("project", directory, next)
           })
+        })
+      },
+      unseenInDirectory(session: string, directory: string) {
+        return (index.session.unseen[session] ?? empty).filter((notification) => notification.directory === directory)
+      },
+      markViewedInDirectory(session: string, directory: string) {
+        const unseen = (index.session.unseen[session] ?? empty).filter(
+          (notification) => notification.directory === directory,
+        )
+        if (!unseen.length) return
+
+        batch(() => {
+          setStore(
+            "list",
+            (n) => n.session === session && n.directory === directory && !n.viewed,
+            "viewed",
+            true,
+          )
+          updateUnseen(
+            "session",
+            session,
+            (index.session.unseen[session] ?? empty).filter((notification) => notification.directory !== directory),
+          )
+          updateUnseen(
+            "project",
+            directory,
+            (index.project.unseen[directory] ?? empty).filter((notification) => notification.session !== session),
+          )
         })
       },
     },

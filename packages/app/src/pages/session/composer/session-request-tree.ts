@@ -1,12 +1,12 @@
 import type { PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
 
-function sessionTreeRequest<T>(
-  session: Session[],
+export function sessionTreeRequests<T>(
+  session: ReadonlyArray<Session>,
   request: Record<string, T[] | undefined>,
   sessionID?: string,
   include: (item: T) => boolean = () => true,
 ) {
-  if (!sessionID) return
+  if (!sessionID) return []
 
   const map = session.reduce((acc, item) => {
     if (!item.parentID) return acc
@@ -28,25 +28,23 @@ function sessionTreeRequest<T>(
     }
   }
 
-  const id = ids.find((id) => request[id]?.some(include))
-  if (!id) return
-  return request[id]?.find(include)
+  return ids.flatMap((id) => request[id]?.filter(include) ?? [])
 }
 
 export function sessionPermissionRequest(
-  session: Session[],
+  session: ReadonlyArray<Session>,
   request: Record<string, PermissionRequest[] | undefined>,
   sessionID?: string,
   include?: (item: PermissionRequest) => boolean,
 ) {
-  return sessionTreeRequest(session, request, sessionID, include)
+  return sessionTreeRequests(session, request, sessionID, include)[0]
 }
 
 export function sessionQuestionRequest(
-  session: Session[],
+  session: ReadonlyArray<Session>,
   request: Record<string, QuestionRequest[] | undefined>,
   sessionID?: string,
   include?: (item: QuestionRequest) => boolean,
 ) {
-  return sessionTreeRequest(session, request, sessionID, include)
+  return sessionTreeRequests(session, request, sessionID, include)[0]
 }

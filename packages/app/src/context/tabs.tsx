@@ -154,6 +154,16 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
       navigate(href)
     }
 
+    const navigateTabEager = (tab: Tab) => {
+      const href = tabHref(tab)
+      setRecentKey(tabKey(tab))
+      // Solid Router commits browser history after its transition settles. Push first,
+      // then let its native popstate integration accept or roll back via beforeLeave.
+      window.history.pushState(undefined, "", href)
+      window.history.replaceState({ ...window.history.state, _depth: window.history.length - 1 }, "")
+      window.dispatchEvent(new PopStateEvent("popstate", { state: window.history.state }))
+    }
+
     const removeTab = (index: number) => {
       const tab = store[index]
       if (!tab) return
@@ -309,19 +319,12 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
           setStore(
             produce((tabs) => {
               const sessionIDs = new Set(input.sessionIDs)
-              const currentHref =
-                targetServer === server.key && params.dir && params.id
-                  ? tabHref({
-                      type: "session",
-                      server: targetServer,
-                      sessionId: params.id,
-                    })
-                  : undefined
-              const currentIndex = currentHref
-                ? tabs.findIndex(
-                    (tab) => tab.type === "session" && tab.server === targetServer && tabHref(tab) === currentHref,
-                  )
-                : -1
+              const currentIndex = tabs.findIndex(
+                (tab) =>
+                  tab.type === "session" &&
+                  tab.server === targetServer &&
+                  location.pathname === tabHref(tab),
+              )
               const currentTab = tabs[currentIndex]
               const removedCurrent =
                 currentTab?.type === "session" &&
@@ -357,6 +360,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
         setInfo(key, next)
       },
       select: navigateTab,
+      selectEager: navigateTabEager,
       remember(tab: Tab) {
         const key = tabKey(tab)
         if (recentKey() !== key) setRecentKey(key)

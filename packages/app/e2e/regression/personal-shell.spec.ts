@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
+import { ServerConnection } from "@/context/server"
+import { sessionHref } from "@/utils/session-route"
 import { mockOpenCodeServer } from "../utils/mock-server"
 
 const directory = "C:/OpenCode/PersonalShell"
@@ -11,6 +13,117 @@ const project = {
   time: { created: 1, updated: 2 },
   sandboxes: [],
 }
+
+test("commits Personal selection before target messages finish loading", async ({ page }) => {
+  const targetHistory = Promise.withResolvers<void>()
+  const requests: { phase: "start" | "end" }[] = []
+  await mockOpenCodeServer(page, {
+    directory,
+    project: [project, emptyProject],
+    provider: { all: [], connected: [], default: {} },
+    sessions,
+    pageMessages: (sessionID) => ({ items: sessionID === "ses_beta" ? [targetMessage()] : [] }),
+    beforeMessagesResponse: ({ sessionID, before }) => {
+      if (sessionID !== "ses_beta" || before) return Promise.resolve()
+      return targetHistory.promise
+    },
+    onMessages: ({ sessionID, before, phase }) => {
+      if (sessionID === "ses_beta" && !before) requests.push({ phase })
+    },
+  })
+  await installPersonalState(page, "light")
+  const alphaHref = sessionHref(ServerConnection.Key.make(server), "ses_alpha")
+  const betaHref = sessionHref(ServerConnection.Key.make(server), "ses_beta")
+  await page.goto(alphaHref)
+
+  const rail = page.locator("aside.personal-rail")
+  const beta = rail.getByRole("button", { name: /Beta task/ })
+  const historyLength = await page.evaluate(() => window.history.length)
+  await beta.click()
+  await expect.poll(() => requests.some((request) => request.phase === "start")).toBe(true)
+  expect(requests.some((request) => request.phase === "end")).toBe(false)
+  await expect(page).toHaveURL(new RegExp(`${escapeRegExp(betaHref)}$`), { timeout: 2_000 })
+  await expect.poll(() => page.evaluate(() => window.history.length)).toBe(historyLength + 1)
+  await expect(beta).toHaveAttribute("aria-current", "page", { timeout: 2_000 })
+  await expect(page.locator('[data-timeline-part-id="prt_beta_target"]')).toHaveCount(0)
+
+  targetHistory.resolve()
+  await expect.poll(() => requests.some((request) => request.phase === "end")).toBe(true)
+  await expect(page.locator('[data-timeline-part-id="prt_beta_target"]')).toBeVisible()
+  await expect.poll(() => page.evaluate(() => window.history.length)).toBe(historyLength + 1)
+  await page.goBack()
+  await expect(page).toHaveURL(new RegExp(`${escapeRegExp(alphaHref)}$`))
+})
+
+test("renames from the menu and double-click and opens native Settings", async ({ page }) => {
+  const updates: { sessionID: string; body: unknown }[] = []
+  await setup(page, "light", { onSessionUpdate: (input) => updates.push(input) })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto("/")
+
+  const rail = page.locator("aside.personal-rail")
+  const alphaRow = rail.locator(".personal-session-row").filter({ hasText: "Alpha session" })
+  await alphaRow.getByRole("button", { name: "Session actions" }).click()
+  await page.getByRole("menuitem", { name: "Rename" }).click()
+  const menuEditor = rail.getByRole("textbox", { name: "Rename" })
+  await menuEditor.fill("Menu title")
+  await menuEditor.press("Enter")
+  await expect.poll(() => updates.at(-1)).toEqual({ sessionID: "ses_alpha", body: { title: "Menu title" } })
+  await expect(menuEditor).toHaveCount(0)
+
+  const beta = rail.getByRole("button", { name: /Beta task/ })
+  await beta.dblclick()
+  const doubleClickEditor = rail.getByRole("textbox", { name: "Rename" })
+  await doubleClickEditor.fill("Double-click title")
+  await doubleClickEditor.press("Enter")
+  await expect.poll(() => updates.at(-1)).toEqual({ sessionID: "ses_beta", body: { title: "Double-click title" } })
+
+  const settings = rail.getByRole("button", { name: "Settings" })
+  const railBox = await rail.boundingBox()
+  const settingsBox = await settings.boundingBox()
+  expect(settingsBox?.y).toBeGreaterThan((railBox?.y ?? 0) + (railBox?.height ?? 0) - 80)
+  await settings.click()
+  await expect(page.locator('[data-component="dialog-v2"][data-variant="settings"]')).toBeVisible()
+  await expect(page.getByRole("tab", { name: "General" })).toBeVisible()
+})
+
+test("archives the selected conversation and automatically closes its tab", async ({ page }) => {
+  const updates: { sessionID: string; body: unknown }[] = []
+  await setup(page, "light", { onSessionUpdate: (input) => updates.push(input) })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const alphaHref = sessionHref(ServerConnection.Key.make(server), "ses_alpha")
+  const betaHref = sessionHref(ServerConnection.Key.make(server), "ses_beta")
+  await page.goto(alphaHref)
+
+  const rail = page.locator("aside.personal-rail")
+  const alphaRow = rail.locator(".personal-session-row").filter({ hasText: "Alpha session" })
+  await alphaRow.getByRole("button", { name: "Session actions" }).click()
+  await page.getByRole("menuitem", { name: "Archive session" }).click()
+
+  await expect.poll(() => updates.at(-1)).toEqual({
+    sessionID: "ses_alpha",
+    body: { time: { archived: expect.any(Number) } },
+  })
+  await expect(page).toHaveURL(new RegExp(`${escapeRegExp(betaHref)}$`))
+  await expect(rail.getByRole("button", { name: /Alpha session/ })).toHaveCount(0)
+  await expect(rail.getByRole("button", { name: /Beta task/ })).toHaveAttribute("aria-current", "page")
+})
+
+test("keeps the conversation tab open when archive fails", async ({ page }) => {
+  await setup(page, "light", { sessionUpdateStatus: 500 })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  const alphaHref = sessionHref(ServerConnection.Key.make(server), "ses_alpha")
+  await page.goto(alphaHref)
+
+  const rail = page.locator("aside.personal-rail")
+  const alphaRow = rail.locator(".personal-session-row").filter({ hasText: "Alpha session" })
+  await alphaRow.getByRole("button", { name: "Session actions" }).click()
+  await page.getByRole("menuitem", { name: "Archive session" }).click()
+
+  await expect(page).toHaveURL(new RegExp(`${escapeRegExp(alphaHref)}$`))
+  await expect(rail.getByRole("button", { name: /Alpha session/ })).toHaveAttribute("aria-current", "page")
+  await expect(page.getByText("Request failed", { exact: true })).toBeVisible()
+})
 const emptyProject = {
   id: "project-empty",
   worktree: "C:/OpenCode/EmptyProject",
@@ -79,9 +192,19 @@ for (const mode of [
       await expect(drawer).toBeVisible()
       await expect(drawer.getByRole("button", { name: /Alpha session/ })).toBeVisible()
       await expect(drawer.getByRole("button", { name: /Empty Project/ })).toHaveCount(0)
+      const settings = drawer.getByRole("button", { name: "Settings" })
+      const settingsBox = await settings.boundingBox()
+      expect(settingsBox?.width).toBeGreaterThanOrEqual(44)
+      expect(settingsBox?.height).toBeGreaterThanOrEqual(44)
       await expectDrawerGeometry(drawer, width)
       await expectNoHorizontalOverflow(page)
       await page.screenshot({ path: testInfo.outputPath(`personal-shell-${width}-${mode.name}.png`), fullPage: true })
+      if (width === 390) {
+        await settings.click()
+        const dialog = page.locator('[data-component="dialog-v2"][data-variant="settings"]')
+        await expect(dialog).toBeVisible()
+        continue
+      }
       await drawer.getByRole("button", { name: "Close project navigation" }).click()
       await expect(drawer).toBeHidden()
       await expect(trigger).toBeFocused()
@@ -89,14 +212,23 @@ for (const mode of [
   })
 }
 
-async function setup(page: Page, scheme: "light" | "dark") {
+async function setup(
+  page: Page,
+  scheme: "light" | "dark",
+  options?: Pick<Parameters<typeof mockOpenCodeServer>[1], "onSessionUpdate" | "sessionUpdateStatus">,
+) {
   await mockOpenCodeServer(page, {
     directory,
     project: [project, emptyProject],
     provider: { all: [], connected: [], default: {} },
     sessions,
     pageMessages: () => ({ items: [] }),
+    ...options,
   })
+  await installPersonalState(page, scheme)
+}
+
+async function installPersonalState(page: Page, scheme: "light" | "dark") {
   await page.addInitScript(
     ({ directory, scheme, server }) => {
       localStorage.setItem("settings.v3", JSON.stringify({ general: { newLayoutDesigns: true } }))
@@ -120,6 +252,32 @@ async function setup(page: Page, scheme: "light" | "dark") {
     },
     { directory, scheme, server },
   )
+}
+
+function targetMessage() {
+  return {
+    info: {
+      id: "msg_beta_target",
+      sessionID: "ses_beta",
+      role: "user",
+      time: { created: 2 },
+      agent: "build",
+      model: { providerID: "opencode", modelID: "test" },
+    },
+    parts: [
+      {
+        id: "prt_beta_target",
+        sessionID: "ses_beta",
+        messageID: "msg_beta_target",
+        type: "text",
+        text: "Delayed beta content",
+      },
+    ],
+  }
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 async function expectNoHorizontalOverflow(page: Page) {

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { PermissionRequest, QuestionRequest, Session } from "@opencode-ai/sdk/v2/client"
 import { todoDockAtBoundary, todoState } from "./session-composer-state"
-import { sessionPermissionRequest, sessionQuestionRequest } from "./session-request-tree"
+import { sessionPermissionRequest, sessionQuestionRequest, sessionTreeRequests } from "./session-request-tree"
 
 const session = (input: { id: string; parentID?: string }) =>
   ({
@@ -23,6 +23,19 @@ const question = (id: string, sessionID: string) =>
   }) as QuestionRequest
 
 describe("sessionPermissionRequest", () => {
+  test("returns all matching requests from the session tree", () => {
+    const sessions = [session({ id: "root" }), session({ id: "child", parentID: "root" })]
+    const permissions = {
+      root: [permission("perm-root", "root")],
+      child: [permission("perm-child", "child")],
+    }
+
+    expect(sessionTreeRequests(sessions, permissions, "root").map((item) => item.id)).toEqual([
+      "perm-root",
+      "perm-child",
+    ])
+  })
+
   test("prefers the current session permission", () => {
     const sessions = [session({ id: "root" }), session({ id: "child", parentID: "root" })]
     const permissions = {

@@ -25,6 +25,8 @@ At tablet and mobile widths, persistent side regions collapse into the existing 
 - The shell owns composition, scoped tokens, and presentation only.
 - Questions, permissions, composer docks, message timeline, review, file tree, terminal, tabs, settings, models, providers, and MCP retain their native behavior implementations.
 - Personal UI is the native New Layout presentation; no duplicate fallback control is shown in the workspace.
+- Keep Settings in a fixed rail footer. Session rename uses a compact inline input opened from the actions menu or desktop double-click.
+- Attention rows move actionable requests and unread terminal outcomes out of project groups. Running and retrying rows stay in project context.
 
 ## Motion
 

@@ -2,7 +2,8 @@ import type { Session } from "@opencode-ai/sdk/v2/client"
 import { Binary } from "@opencode-ai/core/util/binary"
 import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { Icon } from "@opencode-ai/ui/v2/icon"
-import { Suspense, createEffect, createMemo, onCleanup, startTransition, type ParentProps } from "solid-js"
+import { LoaderV2 } from "@opencode-ai/ui/v2/loader-v2"
+import { Suspense, Show, createEffect, createMemo, createSignal, onCleanup, type ParentProps } from "solid-js"
 import { createMediaQuery } from "@solid-primitives/media"
 import { createStore, produce } from "solid-js/store"
 import type { HomeSessionEvents, HomeSessionIndex } from "@/context/global-sync/home-session-index"
@@ -10,12 +11,17 @@ import { loadHomeSessionIndex, retainHomeSessions } from "@/context/global-sync/
 import { useGlobal } from "@/context/global"
 import { useLanguage } from "@/context/language"
 import { useLayout } from "@/context/layout"
+import { useNotification } from "@/context/notification"
+import { usePermission } from "@/context/permission"
 import { tabKey, useTabs } from "@/context/tabs"
 import { ServerConnection, serverName } from "@/context/server"
 import { Drawer, DrawerClose, DrawerContent, DrawerTitle } from "@/components/ui/drawer"
+import { useSettingsCommand } from "@/components/settings-dialog"
 import { archiveHomeSession } from "@/pages/home-session-archive"
+import { sessionTreeRequests } from "@/pages/session/composer/session-request-tree"
 import { errorMessage } from "@/pages/layout/helpers"
 import { showToast } from "@/utils/toast"
+import { sessionHref } from "@/utils/session-route"
 import NewLayout from "@/pages/layout-new"
 import {
   personalDirectorySessionKey,
@@ -33,9 +39,31 @@ export default function PersonalLayout(props: ParentProps) {
   const global = useGlobal()
   const language = useLanguage()
   const layout = useLayout()
+  const notification = useNotification()
+  const permission = usePermission()
   const tabs = useTabs()
+  const openSettings = useSettingsCommand()
   const compact = createMediaQuery("(max-width: 1079px)")
   const [state, setState] = createStore({ search: "", cacheVersion: 0 })
+  const [pendingRoute, setPendingRoute] = createSignal<{ server: string; sessionId: string }>()
+
+  const reconcilePendingRoute = () => {
+    const pending = pendingRoute()
+    if (!pending) return
+    const href = sessionHref(ServerConnection.Key.make(pending.server), pending.sessionId)
+    if (window.location.pathname !== href) setPendingRoute(undefined)
+  }
+  window.addEventListener("popstate", reconcilePendingRoute)
+  onCleanup(() => window.removeEventListener("popstate", reconcilePendingRoute))
+
+  createEffect(() => {
+    const pending = pendingRoute()
+    const route = layout.route()
+    if (!pending || route.type !== "session") return
+    if (route.sessionId !== pending.sessionId) return
+    if (route.server !== undefined && route.server !== pending.server) return
+    setPendingRoute(undefined)
+  })
 
   createEffect(() => {
     const cleanups = global.servers.list().map((conn) =>
@@ -81,6 +109,8 @@ export default function PersonalLayout(props: ParentProps) {
       servers: global.servers.list().map((conn) => {
         const key = ServerConnection.key(conn)
         const ctx = global.ensureServerCtx(conn)
+        const notificationState = notification.ensureServerState(key)
+        const permissionState = permission.ensureServerState(key)
         const cache = ctx.sync.homeSessions
         const query = ctx.queryClient.getQueryState(cache.indexKey)
         const index = ctx.queryClient.getQueryData<HomeSessionIndex>(cache.indexKey)
@@ -97,6 +127,16 @@ export default function PersonalLayout(props: ParentProps) {
         ])
         const directoryStores = new Map(
           [...directories].map((directory) => [directory, ctx.sync.peek(directory, { bootstrap: false })[0]] as const),
+        )
+        const directorySessions = new Map(
+          [...directoryStores].map(([directory, store]) => {
+            const values = new Map(
+              [...sessions.values(), ...store.session]
+                .filter((session) => session.directory === directory)
+                .map((session) => [session.id, session] as const),
+            )
+            return [directory, [...values.values()]] as const
+          }),
         )
         return {
           key,
@@ -137,19 +177,37 @@ export default function PersonalLayout(props: ParentProps) {
           ),
           questions: Object.fromEntries(
             [...directoryStores].flatMap(([directory, store]) =>
-              Object.entries(store.question).map(([id, value]) => [
-                personalDirectorySessionKey(directory, id),
-                value?.length ?? 0,
-              ]),
+              (directorySessions.get(directory) ?? [])
+                .filter((session) => !session.parentID)
+                .map((session) => [
+                  personalDirectorySessionKey(directory, session.id),
+                  sessionTreeRequests(directorySessions.get(directory) ?? [], store.question, session.id).length,
+                ]),
             ),
           ),
           permissions: Object.fromEntries(
             [...directoryStores].flatMap(([directory, store]) =>
-              Object.entries(store.permission).map(([id, value]) => [
-                personalDirectorySessionKey(directory, id),
-                value?.length ?? 0,
-              ]),
+              (directorySessions.get(directory) ?? [])
+                .filter((session) => !session.parentID)
+                .map((session) => [
+                  personalDirectorySessionKey(directory, session.id),
+                  sessionTreeRequests(
+                    directorySessions.get(directory) ?? [],
+                    store.permission,
+                    session.id,
+                    (item) => !permissionState.autoResponds(item, directory),
+                  ).length,
+                ]),
             ),
+          ),
+          notifications: Object.fromEntries(
+            [...sessions.values()].map((session) => {
+              const unseen = notificationState.session.unseenInDirectory(session.id, session.directory)
+              return [
+                personalDirectorySessionKey(session.directory, session.id),
+                { count: unseen.length, hasError: unseen.some((item) => item.type === "error") },
+              ]
+            }),
           ),
         }
       }),
@@ -157,7 +215,9 @@ export default function PersonalLayout(props: ParentProps) {
         const key = tabKey(tab)
         return { key, tab, title: tabs.info[key]?.title, directory: tabs.info[key]?.directory }
       }),
-      route: layout.route(),
+      route: pendingRoute()
+        ? { type: "session", server: pendingRoute()!.server, sessionId: pendingRoute()!.sessionId }
+        : layout.route(),
     })
   })
 
@@ -193,10 +253,9 @@ export default function PersonalLayout(props: ParentProps) {
     if (!ctx) return
     ctx.projects.open(item.projectDirectory)
     ctx.projects.touch(item.projectDirectory)
-    startTransition(() => {
-      const tab = tabs.addSessionTab({ server: ServerConnection.Key.make(item.server), sessionId: item.sessionId! })
-      tabs.select(tab)
-    })
+    const tab = tabs.addSessionTab({ server: ServerConnection.Key.make(item.server), sessionId: item.sessionId })
+    setPendingRoute({ server: item.server, sessionId: item.sessionId })
+    tabs.selectEager(tab)
     closeDrawer()
   }
 
@@ -205,6 +264,7 @@ export default function PersonalLayout(props: ParentProps) {
     if (!ctx) return
     ctx.projects.open(project.directory)
     ctx.projects.touch(project.directory)
+    setPendingRoute(undefined)
     void tabs.newDraft({ server: ServerConnection.Key.make(project.server), directory: project.directory })
     closeDrawer()
   }
@@ -239,6 +299,23 @@ export default function PersonalLayout(props: ParentProps) {
     })
   }
 
+  async function renameSession(item: PersonalSessionItem, title: string) {
+    if (!item.sessionId) return false
+    const ctx = serverContext(item.server)
+    if (!ctx) return false
+    return ctx.sdk
+      .createClient({ directory: item.directory, throwOnError: true })
+      .session.update({ sessionID: item.sessionId, title })
+      .then(() => true)
+      .catch((error) => {
+        showToast({
+          title: language.t("common.requestFailed"),
+          description: errorMessage(error, language.t("common.requestFailed")),
+        })
+        return false
+      })
+  }
+
   function toggleProject(project: PersonalProjectGroup) {
     const ctx = serverContext(project.server)
     if (!ctx) return
@@ -262,12 +339,13 @@ export default function PersonalLayout(props: ParentProps) {
     <PersonalRail
       id={id}
       groups={groups()}
-      blocking={projection().blocking}
+      attention={projection().attention}
       dataState={projection().state}
       search={state.search}
-      homeActive={layout.route().type === "home"}
+      homeActive={!pendingRoute() && layout.route().type === "home"}
       onSearch={(value) => setState("search", value)}
       onHome={() => {
+        setPendingRoute(undefined)
         tabs.toggleHome({ home: false })
         closeDrawer()
       }}
@@ -276,6 +354,8 @@ export default function PersonalLayout(props: ParentProps) {
       onOpen={openSession}
       onClose={closeTab}
       onArchive={(item) => void archiveSession(item)}
+      onRename={renameSession}
+      onSettings={openSettings}
       onMoveFocus={moveSessionFocus}
     />
   )
@@ -289,6 +369,12 @@ export default function PersonalLayout(props: ParentProps) {
 
         <div class="personal-route-surface">
           <Suspense>{props.children}</Suspense>
+          <Show when={pendingRoute()}>
+            <div class="personal-route-loading" role="status" aria-live="polite">
+              <LoaderV2 />
+              <span>{language.t("personal.session.loading")}</span>
+            </div>
+          </Show>
         </div>
 
         <Drawer
