@@ -6,7 +6,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -57,6 +57,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
+import { LLMEvent } from "@opencode-ai/llm"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -164,6 +165,44 @@ const blockingProcessor = Layer.succeed(
   }),
 )
 
+const streamReadRecoveryLLM = Layer.succeed(
+  LLM.Service,
+  (() => {
+    let calls = 0
+    return LLM.Service.of({
+      stream: (input) => {
+        calls += 1
+        if (calls === 1) {
+          return Stream.concat(
+            Stream.make(
+              LLMEvent.stepStart({ index: 0 }),
+              LLMEvent.textStart({ id: "partial-stream-read" }),
+              LLMEvent.textDelta({ id: "partial-stream-read", text: "partial response" }),
+            ),
+            Stream.fail({
+              type: "error",
+              sequence_number: 0,
+              error: { type: "upstream_error", code: "stream_read_error", message: "stream_read_error" },
+            }),
+          )
+        }
+        const history = JSON.stringify(input.messages)
+        if (!history.includes("partial response") || !history.includes("Do not repeat completed work or tool calls")) {
+          return Stream.die("continuation history is incomplete")
+        }
+        return Stream.make(
+          LLMEvent.stepStart({ index: 0 }),
+          LLMEvent.textStart({ id: "recovered-stream-read" }),
+          LLMEvent.textDelta({ id: "recovered-stream-read", text: "recovered continuation" }),
+          LLMEvent.textEnd({ id: "recovered-stream-read" }),
+          LLMEvent.stepFinish({ index: 0, reason: "stop" }),
+          LLMEvent.finish({ reason: "stop" }),
+        )
+      },
+    })
+  })(),
+)
+
 const runtimeFlags = RuntimeFlags.layer({ experimentalEventSystem: true })
 
 const testLLMServerNode = LayerNode.make({ service: TestLLMServer, layer: TestLLMServer.layer, deps: [] })
@@ -242,6 +281,15 @@ function makeHttpNoLLMServer(input?: { mcpInstructions?: MCP.ServerInstructions[
 const it = testEffect(makeHttp())
 const noLLMServer = testEffect(makeHttpNoLLMServer())
 const raceNoLLMServer = testEffect(makeHttpNoLLMServer({ processor: "blocking" }))
+const streamReadRecovery = testEffect(
+  LayerNode.compile(promptRoot, [
+    [SessionSummary.node, summary],
+    [LSP.node, lsp],
+    [MCP.node, makeMcp()],
+    [RuntimeFlags.node, runtimeFlags],
+    [LLM.node, streamReadRecoveryLLM],
+  ]),
+)
 const withMcpInstructions = testEffect(
   makeHttp({
     mcpInstructions: [
@@ -1568,6 +1616,42 @@ it.instance("concurrent loop callers all receive same error result", () =>
     })
     expect(a.info.id).toBe(b.info.id)
     expect(a.info.role).toBe("assistant")
+  }),
+)
+
+streamReadRecovery.instance("loop continues after partial text stream read errors without replaying the failed turn", () =>
+  Effect.gen(function* () {
+    const { directory } = yield* TestInstance
+    yield* writeConfig(directory, cfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* user(chat.id, "hello")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const assistants = messages.filter((message) => message.info.role === "assistant")
+    const continuation = messages.find(
+      (message) =>
+        message.info.role === "user" &&
+        message.parts.some(
+          (part) => part.type === "text" && part.synthetic && part.metadata?.stream_read_continue === true,
+        ),
+    )
+
+    expect(assistants).toHaveLength(2)
+    const failed = assistants[0]
+    expect(failed?.info.role).toBe("assistant")
+    if (failed?.info.role !== "assistant") throw new Error("expected failed assistant")
+    expect(failed.info.error?.name).toBe("APIError")
+    expect(failed.parts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "text", text: "partial response" })]),
+    )
+    expect(continuation?.info.id).toBe(result.info.role === "assistant" ? result.info.parentID : undefined)
+    expect(result.parts).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: "text", text: "recovered continuation" })]),
+    )
   }),
 )
 

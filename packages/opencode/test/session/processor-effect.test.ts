@@ -261,6 +261,29 @@ const streamReadErrorRetry = retryGateEnv(
     error: { type: "upstream_error", code: "stream_read_error", message: "stream_read_error" },
   }),
 )
+const partialStreamReadRecovery = retryGateEnv(
+  Stream.concat(
+    Stream.make(
+      LLMEvent.textStart({ id: "text-partial-stream-read" }),
+      LLMEvent.textDelta({ id: "text-partial-stream-read", text: "partial" }),
+    ),
+    Stream.fail({
+      type: "error",
+      sequence_number: 0,
+      error: { type: "upstream_error", code: "stream_read_error", message: "stream_read_error" },
+    }),
+  ),
+)
+const toolStreamReadRecovery = retryGateEnv(
+  Stream.concat(
+    Stream.make(
+      LLMEvent.toolInputStart({ id: "call-stream-read", name: "lookup" }),
+      LLMEvent.toolInputEnd({ id: "call-stream-read", name: "lookup" }),
+      LLMEvent.toolCall({ id: "call-stream-read", name: "lookup", input: {}, providerExecuted: true }),
+    ),
+    Stream.fail({ type: "stream_read_error", message: "upstream stream disconnected: unexpected EOF" }),
+  ),
+)
 const emptySuccessRetry = retryGateEnv(
   Stream.make(
     LLMEvent.stepStart({ index: 0 }),
@@ -1422,6 +1445,30 @@ streamReadErrorRetry.it.live("session.processor retries a structured provider st
   }),
 )
 
+partialStreamReadRecovery.it.live("session.processor recovers after partial text without replaying the provider turn", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("recover partial provider stream read error")
+
+    expect(result.result).toBe("stop")
+    expect(result.handle.recover).toBe(true)
+    expect(partialStreamReadRecovery.calls()).toBe(1)
+    expect(result.handle.message.error?.name).toBe("APIError")
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "partial" })]))
+  }),
+)
+
+toolStreamReadRecovery.it.live("session.processor recovers after tool activity without replaying the provider turn", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("recover tool provider stream read error")
+
+    expect(result.result).toBe("stop")
+    expect(result.handle.recover).toBe(true)
+    expect(toolStreamReadRecovery.calls()).toBe(1)
+    expect(result.handle.message.error?.name).toBe("APIError")
+    expect(result.parts.filter((part) => part.type === "tool")).toHaveLength(1)
+  }),
+)
+
 emptySuccessRetry.it.live("session.processor retries a successful empty response", () =>
   Effect.gen(function* () {
     const result = yield* processOnce("retry empty success")
@@ -1446,11 +1493,12 @@ persistentEmptySuccess.live("session.processor stops after repeated successful e
   }),
 )
 
-partialTextNoRetry.it.live("session.processor preserves partial text and does not retry an HTTP 200 stream error", () =>
+partialTextNoRetry.it.live("session.processor preserves partial text and does not retry a generic HTTP 200 stream error", () =>
   Effect.gen(function* () {
     const result = yield* processOnce("do not replay partial text")
 
     expect(result.result).toBe("stop")
+    expect(result.handle.recover).toBe(false)
     expect(partialTextNoRetry.calls()).toBe(1)
     expect(result.handle.message.error?.name).toBe("APIError")
     expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "partial" })]))
@@ -1462,6 +1510,7 @@ toolNoRetry.it.live("session.processor does not replay tools after an HTTP 200 s
     const result = yield* processOnce("do not replay tools")
 
     expect(result.result).toBe("stop")
+    expect(result.handle.recover).toBe(false)
     expect(toolNoRetry.calls()).toBe(1)
     expect(result.handle.message.error?.name).toBe("APIError")
     expect(result.parts.filter((part) => part.type === "tool")).toHaveLength(1)
