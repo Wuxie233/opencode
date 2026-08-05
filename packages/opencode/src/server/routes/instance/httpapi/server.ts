@@ -117,6 +117,7 @@ import { corsVaryFix } from "./middleware/cors-vary"
 import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
+import { requestPerformanceLayer } from "./middleware/request-performance"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -302,6 +303,7 @@ export function createRoutes(
       errorLayer,
       compressionLayer,
       corsVaryFix,
+      requestPerformanceLayer,
       fenceLayer,
       cors(corsOptions),
       AppNodeBuilderV1.build(MoveSession.node, [[LocationServiceMap.node, locationServiceMapV2]]),

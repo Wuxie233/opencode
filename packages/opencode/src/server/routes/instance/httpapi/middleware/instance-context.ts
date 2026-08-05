@@ -6,6 +6,7 @@ import { Effect, Exit, Layer, Stream } from "effect"
 import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import { WorkspaceRouteContext } from "./workspace-routing"
+import { measure } from "./request-performance"
 
 export class InstanceContextMiddleware extends HttpApiMiddleware.Service<
   InstanceContextMiddleware,
@@ -32,11 +33,14 @@ function provideInstanceContext<E>(
 > {
   return Effect.gen(function* () {
     const route = yield* WorkspaceRouteContext
-    const lease = yield* store.acquire({ directory: decode(route.directory) })
-    const response = yield* effect.pipe(
-      Effect.provideService(InstanceRef, lease.context),
-      Effect.provideService(WorkspaceRef, route.workspaceID),
-      Effect.onExit((exit) => (Exit.isFailure(exit) ? lease.release : Effect.void)),
+    const lease = yield* measure("instance_acquire", store.acquire({ directory: decode(route.directory) }))
+    const response = yield* measure(
+      "handler",
+      effect.pipe(
+        Effect.provideService(InstanceRef, lease.context),
+        Effect.provideService(WorkspaceRef, route.workspaceID),
+        Effect.onExit((exit) => (Exit.isFailure(exit) ? lease.release : Effect.void)),
+      ),
     )
     if (response.body._tag !== "Stream") {
       yield* lease.release

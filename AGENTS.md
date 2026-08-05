@@ -152,6 +152,12 @@ const table = sqliteTable("session", {
 
 - After verified OpenCode core changes intended for this host, build an immutable runtime release and atomically stage `/opt/opencode-runtime/bin/opencode` by default so the user's next manual restart loads it. Never restart OpenCode automatically. Skip staging only when the user explicitly requests source-only work or when a build/deployment blocker is reported.
 
+## HTTP Performance Logs
+
+- The server records one privacy-safe `event=http_request` entry for each matched API route when its response is ready. Fields use the normalized route template plus method, status, total milliseconds, and available fixed phase timings; never add concrete URLs, route params, query values, headers, directories, request/response bodies, or session content.
+- Static UI catch-all requests are excluded. Streaming totals stop when the response is ready, not when the body or SSE connection closes.
+- On this host, query `/flyshop/opencode/local-share/log/opencode.log` for `event=http_request`; `/etc/logrotate.d/opencode` bounds that append-only file without restarting the service and must match `packages/opencode/deploy/opencode.logrotate`.
+
 ## Routed Skills
 
 - Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.

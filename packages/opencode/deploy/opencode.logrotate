@@ -1,0 +1,11 @@
+/flyshop/opencode/local-share/log/opencode.log {
+    daily
+    rotate 14
+    maxsize 100M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

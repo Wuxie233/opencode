@@ -13,6 +13,7 @@ import { HttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "e
 import { HttpApiMiddleware } from "effect/unstable/httpapi"
 import * as Socket from "effect/unstable/socket/Socket"
 import { InvalidRequestError } from "../errors"
+import { measure } from "./request-performance"
 
 // Query fields this middleware reads from the URL. Spread into every
 // endpoint query schema in groups that apply WorkspaceRoutingMiddleware,
@@ -127,17 +128,17 @@ function proxyRemote(
     }
     const proxyURL = workspaceProxyURL(target.url, url)
     const headers = request.headers as Record<string, string>
-    if (headers["upgrade"]?.toLowerCase() === "websocket") return yield* HttpApiProxy.websocket(request, proxyURL)
-    const response = yield* HttpApiProxy.http(client, proxyURL, target.headers, request)
+    if (headers["upgrade"]?.toLowerCase() === "websocket")
+      return yield* measure("proxy", HttpApiProxy.websocket(request, proxyURL))
+    const response = yield* measure("proxy", HttpApiProxy.http(client, proxyURL, target.headers, request))
     const sync = Fence.parse(new Headers(response.headers))
     if (sync) {
-      const syncFailure = yield* Fence.wait(
-        workspace.id,
-        sync,
-        request.source instanceof Request ? request.source.signal : undefined,
-      ).pipe(
-        Effect.as(undefined),
-        Effect.catch((error) => Effect.succeed(HttpServerResponse.text(error.message, { status: 503 }))),
+      const syncFailure = yield* measure(
+        "fence_wait",
+        Fence.wait(workspace.id, sync, request.source instanceof Request ? request.source.signal : undefined).pipe(
+          Effect.as(undefined),
+          Effect.catch((error) => Effect.succeed(HttpServerResponse.text(error.message, { status: 503 }))),
+        ),
       )
       if (syncFailure) return syncFailure
     }
@@ -219,17 +220,22 @@ function routeHttpApiWorkspace<E>(
 > {
   return Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest
-    const sessionID = getWorkspaceRouteSessionID(requestURL(request))
-    const session = sessionID
-      ? yield* Session.Service.use((svc) => svc.get(sessionID)).pipe(
-          Effect.catchIf(
-            (error): error is NotFoundError => NotFoundError.isInstance(error),
-            () => Effect.succeed(undefined),
-          ),
-          Effect.catchDefect(() => Effect.succeed(undefined)),
-        )
-      : undefined
-    const plan = yield* planRequest(request, session)
+    const plan = yield* measure(
+      "workspace_route",
+      Effect.gen(function* () {
+        const sessionID = getWorkspaceRouteSessionID(requestURL(request))
+        const session = sessionID
+          ? yield* Session.Service.use((svc) => svc.get(sessionID)).pipe(
+              Effect.catchIf(
+                (error): error is NotFoundError => NotFoundError.isInstance(error),
+                () => Effect.succeed(undefined),
+              ),
+              Effect.catchDefect(() => Effect.succeed(undefined)),
+            )
+          : undefined
+        return yield* planRequest(request, session)
+      }),
+    )
     return yield* routeWorkspace(client, effect, plan)
   })
 }
@@ -262,7 +268,7 @@ export const workspaceRouterMiddleware = HttpRouter.middleware<{ provides: Works
     return (effect) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest
-        const plan = yield* planRequest(request)
+        const plan = yield* measure("workspace_route", planRequest(request))
         return yield* routeWorkspace(client, effect, plan)
       }).pipe(
         Effect.provideService(Socket.WebSocketConstructor, makeWebSocket),
