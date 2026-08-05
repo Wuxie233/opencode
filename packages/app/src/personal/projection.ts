@@ -210,6 +210,7 @@ function makeProject(
 ): PersonalProjectGroup {
   const sessionTabs = tabs.filter((item) => item.tab.type === "session")
   const rows = new Map<string, PersonalSessionItem>()
+  const runtime = rootRuntimeStates(sessions, server.status)
 
   for (const session of sessions) {
     const tab = sessionTabs.find(
@@ -232,7 +233,7 @@ function makeProject(
       !server.notifications[sessionKey]?.count
     )
       continue
-    const item = sessionItem(server, project, session, tab, route)
+    const item = sessionItem(server, project, session, tab, route, runtime.get(sessionKey))
     rows.set(item.key, item)
   }
 
@@ -286,11 +287,12 @@ function sessionItem(
   source: PersonalSessionSource,
   tab: PersonalTabSource | undefined,
   route: PersonalRoute,
+  runtimeState?: "idle" | "retry" | "busy",
 ): PersonalSessionItem {
   const sessionKey = personalDirectorySessionKey(source.directory, source.id)
   const questionCount = server.questions[sessionKey] ?? 0
   const permissionCount = server.permissions[sessionKey] ?? 0
-  const status = server.status[sessionKey]
+  const status = runtimeState ?? server.status[sessionKey]
   const notifications = server.notifications[sessionKey]
   const state =
     questionCount > 0
@@ -336,6 +338,45 @@ function sessionItem(
     notificationCount: notifications?.count ?? 0,
     notificationHasError: notifications?.hasError ?? false,
   }
+}
+
+function rootRuntimeStates(
+  sessions: ReadonlyArray<PersonalSessionSource>,
+  status: PersonalServerSource["status"],
+) {
+  const byID = new Map(
+    sessions.map((session) => [personalDirectorySessionKey(session.directory, session.id), session] as const),
+  )
+  const rootByID = new Map<string, PersonalSessionSource>()
+
+  const root = (session: PersonalSessionSource) => {
+    const sessionKey = personalDirectorySessionKey(session.directory, session.id)
+    const cached = rootByID.get(sessionKey)
+    if (cached) return cached
+    const seen = new Set([session.id])
+    let current = session
+    while (current.parentID) {
+      if (seen.has(current.parentID)) break
+      seen.add(current.parentID)
+      const parent = byID.get(personalDirectorySessionKey(session.directory, current.parentID))
+      if (!parent) break
+      current = parent
+    }
+    rootByID.set(sessionKey, current)
+    return current
+  }
+
+  const result = new Map<string, "idle" | "retry" | "busy">()
+  for (const session of sessions) {
+    const value = status[personalDirectorySessionKey(session.directory, session.id)]
+    if (!value) continue
+    const owner = root(session)
+    const key = personalDirectorySessionKey(owner.directory, owner.id)
+    const current = result.get(key)
+    if (current === "busy") continue
+    if (value === "busy" || value === "retry" || current === undefined) result.set(key, value)
+  }
+  return result
 }
 
 function draftItem(
