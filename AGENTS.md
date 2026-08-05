@@ -164,6 +164,14 @@ const table = sqliteTable("session", {
 - Keep replay safety in `SessionProcessor`: an HTTP 200 stream error may retry only before non-empty text or reasoning, tool activity, or a patch is visible. Do not broaden provider error matching into generic message substring checks.
 - After visible output or tool/patch activity, an exact `stream_read_error` must preserve the failed assistant turn and its structured error, then let legacy `SessionPrompt` continue in a new synthetic user turn. Never use this continuation path for generic stream errors, aborts, context overflow, or content filtering, and never replay the failed provider turn or completed tool calls.
 
+## App Refresh And Provider Credentials
+
+- Keep MCP resource discovery out of directory bootstrap. The App loads resources on first `@` candidate demand, caches them per server scope and directory, invalidates them after MCP connection changes, and keeps file, agent, and reference candidates usable while resource metadata is unavailable.
+- Keep MCP resource-list metadata requests capped independently from MCP tool and resource-read execution timeouts. A slow metadata server must not hold the directory refresh queue.
+- A directory bootstrap remains in-flight until its background work settles. Coalesce same-directory refreshes into at most one trailing run, allow at most two directories through the refresh queue concurrently, and preserve the immediate `loading` to `partial` UI transition.
+- Treat `server.connected` as layered recovery for active directories: refresh session inventory/status/question/permission without reloading provider, VCS, path, LSP, MCP status, or MCP resources. `global.disposed` and `server.instance.disposed` still request scope-appropriate full rebuilds.
+- Credential set/remove and successful provider OAuth callbacks rotate Provider state for future lookups without closing the prior scoped generation. In-flight turns may continue with captured provider objects; subsequent model resolution must observe new credentials. The App refreshes provider queries and must not call `global.dispose` for credential changes.
+
 ## Routed Skills
 
 - Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.

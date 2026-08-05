@@ -305,6 +305,9 @@ describe("provider HttpApi", () => {
         method: "code",
         instructions: oauthInstructions,
       })
+
+      const callback = yield* requestCallback({ providerID, method: 1, code: "done", headers })
+      expect(callback).toEqual({ status: 200, body: "true" })
     }),
     { ...projectOptions, init: writeProviderAuthPlugin },
     30000,

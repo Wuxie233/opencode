@@ -1,5 +1,5 @@
 import { createRoot, createSignal, getOwner, onCleanup, runWithOwner, type Owner } from "solid-js"
-import { createStore, type SetStoreFunction, type Store } from "solid-js/store"
+import { createStore, reconcile, type SetStoreFunction, type Store } from "solid-js/store"
 import { Persist, persisted } from "@/utils/persist"
 import type { VcsInfo } from "@opencode-ai/sdk/v2/client"
 import {
@@ -28,6 +28,7 @@ export function createChildStoreManager(input: {
   isLoadingSessions: (directory: string) => boolean
   onBootstrap: (directory: string) => void
   onMcp: (directory: string, setStore: SetStoreFunction<State>) => void
+  onMcpResources: (directory: string) => Promise<State["mcp_resource"]>
   onDispose: (directory: string) => void
   translate: (key: string, vars?: Record<string, string | number>) => string
   queryOptions: QueryOptionsApi
@@ -44,6 +45,10 @@ export function createChildStoreManager(input: {
   const ownerPins = new WeakMap<object, Set<string>>()
   const disposers = new Map<string, () => void>()
   const mcpDirectories = new Set<string>()
+  const mcpResourceDirectories = new Set<string>()
+  const mcpResourceLoads = new Map<string, Promise<void>>()
+  const mcpResourceRetryAt = new Map<string, number>()
+  const mcpResourceVersions = new Map<string, number>()
   const mcpToggles = new Map<string, (enabled: boolean) => void>()
   const activeDirectories = new Set<string>()
   const activationToggles = new Map<string, (enabled: boolean) => void>()
@@ -119,6 +124,10 @@ export function createChildStoreManager(input: {
     iconCache.delete(key)
     lifecycle.delete(key)
     mcpDirectories.delete(key)
+    mcpResourceDirectories.delete(key)
+    mcpResourceLoads.delete(key)
+    mcpResourceRetryAt.delete(key)
+    mcpResourceVersions.delete(key)
     mcpToggles.delete(key)
     activeDirectories.delete(key)
     activationToggles.delete(key)
@@ -190,7 +199,6 @@ export function createChildStoreManager(input: {
 
           const pathQuery = useQuery(() => ({ ...input.queryOptions.path(key), enabled: instanceQueriesEnabled() }))
           const mcpQuery = useQuery(() => ({ ...input.queryOptions.mcp(key), enabled: mcpEnabled() }))
-          const mcpResourceQuery = useQuery(() => ({ ...input.queryOptions.mcpResources(key), enabled: mcpEnabled() }))
           const lspQuery = useQuery(() => ({ ...input.queryOptions.lsp(key), enabled: instanceQueriesEnabled() }))
           const providerQuery = useQuery(() => ({
             ...input.queryOptions.providers(key),
@@ -243,9 +251,7 @@ export function createChildStoreManager(input: {
             get mcp() {
               return mcpQuery.isLoading ? {} : (mcpQuery.data ?? {})
             },
-            get mcp_resource() {
-              return mcpResourceQuery.isLoading ? {} : (mcpResourceQuery.data ?? {})
-            },
+            mcp_resource: {},
             get lsp_ready() {
               return instanceQueriesEnabled() && !lspQuery.isLoading
             },
@@ -342,6 +348,45 @@ export function createChildStoreManager(input: {
     const key = directoryKey(directory)
     if (!mcpDirectories.delete(key)) return
     mcpToggles.get(key)?.(false)
+    invalidateMcpResources(key)
+  }
+
+  function invalidateMcpResources(directory: string) {
+    const key = directoryKey(directory)
+    mcpResourceDirectories.delete(key)
+    mcpResourceLoads.delete(key)
+    mcpResourceRetryAt.delete(key)
+    mcpResourceVersions.set(key, (mcpResourceVersions.get(key) ?? 0) + 1)
+    const child = children[key]
+    if (child) child[1]("mcp_resource", {})
+  }
+
+  function loadMcpResources(directory: string) {
+    const key = directoryKey(directory)
+    if (mcpResourceDirectories.has(key)) return Promise.resolve()
+    const pending = mcpResourceLoads.get(key)
+    if (pending) return pending
+    if ((mcpResourceRetryAt.get(key) ?? 0) > Date.now()) return Promise.resolve()
+
+    const child = ensureChild(directory)
+    const version = mcpResourceVersions.get(key) ?? 0
+    const promise = input
+      .onMcpResources(directory)
+      .then((resources) => {
+        if (children[key] !== child) return
+        if ((mcpResourceVersions.get(key) ?? 0) !== version) return
+        child[1]("mcp_resource", reconcile(resources))
+        mcpResourceDirectories.add(key)
+        mcpResourceRetryAt.delete(key)
+      })
+      .catch(() => {
+        mcpResourceRetryAt.set(key, Date.now() + 30_000)
+      })
+      .finally(() => {
+        if (mcpResourceLoads.get(key) === promise) mcpResourceLoads.delete(key)
+      })
+    mcpResourceLoads.set(key, promise)
+    return promise
   }
 
   function projectMeta(directory: string, patch: ProjectMeta) {
@@ -386,6 +431,8 @@ export function createChildStoreManager(input: {
     mcp: (directory: string) => mcpDirectories.has(directoryKey(directory)),
     active: (directory: string) => activeDirectories.has(directoryKey(directory)),
     disableMcp,
+    invalidateMcpResources,
+    loadMcpResources,
     disposeDirectory,
     runEviction,
     vcsCache,

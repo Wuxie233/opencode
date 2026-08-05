@@ -1092,6 +1092,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
 
       if (atMatch) {
         atOnInput(atMatch[1])
+        void sync()
+          .mcp.resources()
+          .then(() => atOnInput(atMatch[1]))
         setStore({ popover: "at", slashMenu: false, slashMenuQuery: "" })
       } else if (slashMatch) {
         slashOnInput(slashMatch[1])
@@ -1209,6 +1212,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     requestAnimationFrame(() => {
       if (!addPart({ type: "text", content: "@", start: 0, end: 0 })) return
       atOnInput("")
+      void sync()
+        .mcp.resources()
+        .then(() => atOnInput(""))
       setStore({ popover: "at", slashMenu: false, slashMenuQuery: "" })
     })
   }

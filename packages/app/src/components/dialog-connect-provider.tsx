@@ -498,7 +498,7 @@ function ProviderConnection(props: {
   })
 
   async function complete() {
-    await serverSDK().client.global.dispose()
+    await serverSync().refreshProviders()
     dialog.close()
     showToast({
       variant: "success",

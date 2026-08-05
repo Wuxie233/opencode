@@ -118,7 +118,7 @@ describe("applyGlobalEvent", () => {
     expect(refreshCount).toBe(1)
   })
 
-  test("handles server.connected by triggering refresh", () => {
+  test("leaves server.connected recovery to the directory queue", () => {
     let refreshCount = 0
     applyGlobalEvent({
       event: { type: "server.connected" },
@@ -129,7 +129,7 @@ describe("applyGlobalEvent", () => {
       setGlobalProject() {},
     })
 
-    expect(refreshCount).toBe(1)
+    expect(refreshCount).toBe(0)
   })
 })
 

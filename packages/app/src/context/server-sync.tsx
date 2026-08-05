@@ -1,11 +1,4 @@
-import type {
-  Config,
-  McpResource,
-  OpencodeClient,
-  Path,
-  Project,
-  ProviderAuthResponse,
-} from "@opencode-ai/sdk/v2/client"
+import type { Config, OpencodeClient, Path, Project, ProviderAuthResponse } from "@opencode-ai/sdk/v2/client"
 import { showToast } from "@/utils/toast"
 import { getFilename } from "@opencode-ai/core/util/path"
 import { type Accessor, batch, createMemo, getOwner, onCleanup, onMount, untrack } from "solid-js"
@@ -65,13 +58,6 @@ export const loadMcpQuery = (scope: ServerScope, directory: string, sdk: Opencod
     queryFn: () => sdk.mcp.status().then((r) => r.data ?? {}),
   })
 
-export const loadMcpResourcesQuery = (scope: ServerScope, directory: string, sdk: OpencodeClient) =>
-  queryOptions<Record<string, McpResource>>({
-    queryKey: [scope, directory, "mcpResources"] as const,
-    queryFn: () => sdk.experimental.resource.list().then((r) => r.data ?? {}),
-    placeholderData: {},
-  })
-
 export const loadLspQuery = (scope: ServerScope, directory: string, sdk: OpencodeClient) =>
   queryOptions({
     queryKey: [scope, directory, "lsp"] as const,
@@ -93,7 +79,6 @@ function makeQueryOptionsApi(
     agents: (directory: PathKey) => loadAgentsQuery(scope, directory, sdkFor(directory)),
     references: (directory: PathKey) => loadReferencesQuery(scope, directory, sdkFor(directory)),
     mcp: (directory: PathKey) => loadMcpQuery(scope, directory, sdkFor(directory)),
-    mcpResources: (directory: PathKey) => loadMcpResourcesQuery(scope, directory, sdkFor(directory)),
     lsp: (directory: PathKey) => loadLspQuery(scope, directory, sdkFor(directory)),
     sessions: (directory: PathKey) => ({ queryKey: [scope, directory, "loadSessions"] as const }),
   }
@@ -210,6 +195,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     key: directoryKey,
     bootstrap: () => queryClient.fetchQuery({ queryKey: [serverSDK.scope, "bootstrap"] }),
     bootstrapInstance,
+    wait: (directory) => booting.get(directoryKey(directory)),
   })
 
   const session = createServerSession(serverSDK.client)
@@ -236,6 +222,10 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         })
       })
     },
+    onMcpResources: (directory) =>
+      sdkFor(directoryKey(directory))
+        .experimental.resource.list()
+        .then((response) => response.data ?? {}),
     onDispose: (directory) => {
       const key = directoryKey(directory)
       queue.clear(key)
@@ -330,7 +320,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     return promise
   }
 
-  async function bootstrapInstance(directory: string) {
+  async function bootstrapInstance(directory: string, full = true) {
     const key = directoryKey(directory)
     if (!key) return
     const pending = booting.get(key)
@@ -360,6 +350,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         translate: language.t,
         queryClient,
         session,
+        mode: full ? "full" : "reconnect",
       })
     })
 
@@ -393,8 +384,14 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
         },
         setGlobalProject: setProjects,
       })
-      if (event.type === "server.connected" || event.type === "global.disposed") {
+      if (event.type === "server.connected") {
         if (recent) return
+        for (const directory of Object.keys(children.children)) {
+          if (!children.active(directory)) continue
+          queue.recover(directory)
+        }
+      }
+      if (event.type === "global.disposed") {
         for (const directory of Object.keys(children.children)) {
           if (!children.active(directory)) continue
           queue.push(directory)
@@ -480,6 +477,11 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     },
   }))
 
+  const refreshProviders = () =>
+    queryClient.invalidateQueries({
+      predicate: (query) => query.queryKey[0] === serverSDK.scope && query.queryKey[2] === "providers",
+    })
+
   return {
     data: globalStore,
     set,
@@ -495,6 +497,7 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
     queryOptions: queryOptionsApi,
     // bootstrap,
     updateConfig: updateConfigMutation.mutateAsync,
+    refreshProviders,
     project: projectApi,
     session,
     homeSessions,
@@ -516,10 +519,11 @@ export function createServerSyncContextInner(serverSDK: ServerSDK) {
           },
           refresh: async () => {
             await queryClient.refetchQueries(queryOptionsApi.mcp(key))
-            await queryClient.refetchQueries(queryOptionsApi.mcpResources(key))
+            children.invalidateMcpResources(key)
           },
         })
       },
+      resources: (directory: string) => children.loadMcpResources(directory),
     },
   }
 }

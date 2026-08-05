@@ -50,8 +50,9 @@ describe("bootstrapDirectory", () => {
   test("marks a loading directory partial during bootstrap and complete after success", async () => {
     const mcpReads: string[] = []
     const [store, setStore] = directoryState()
+    const agents = Promise.withResolvers<{ data: { name: string; mode: "primary" }[] }>()
 
-    await bootstrapDirectory({
+    const done = bootstrapDirectory({
       directory: "/project",
       scope: ServerScope.local,
       mcp: false,
@@ -62,7 +63,7 @@ describe("bootstrapDirectory", () => {
         provider,
       },
       sdk: {
-        app: { agents: async () => ({ data: [{ name: "build", mode: "primary" }] }) },
+        app: { agents: () => agents.promise },
         config: { get: async () => ({ data: {} }) },
         session: { status: async () => ({ data: {} }) },
         vcs: { get: async () => ({ data: undefined }) },
@@ -91,9 +92,11 @@ describe("bootstrapDirectory", () => {
       queryClient: new QueryClient(),
     })
 
+    await new Promise((resolve) => setTimeout(resolve, 10))
     expect(store.status).toBe("partial")
 
-    await new Promise((resolve) => setTimeout(resolve, 80))
+    agents.resolve({ data: [{ name: "build", mode: "primary" }] })
+    await done
 
     expect(store.status).toBe("complete")
     expect(mcpReads).toEqual([])
@@ -157,6 +160,46 @@ describe("bootstrapDirectory", () => {
 
     expect(session.data.session_status["ses_busy"]?.type).toBe("busy")
     expect(session.data.session_status[stale.id]).toBeUndefined()
+  })
+
+  test("reconnect refreshes session state without full directory metadata", async () => {
+    const [store, setStore] = directoryState()
+    setStore("status", "complete")
+    const calls: string[] = []
+    await bootstrapDirectory({
+      directory: "/project",
+      scope: ServerScope.local,
+      mode: "reconnect",
+      mcp: true,
+      global: {
+        config: {} satisfies Config,
+        path: { state: "", config: "", worktree: "/project", directory: "/project", home: "/home" },
+        project: [{ id: "project", worktree: "/project" } as Project],
+        provider,
+      },
+      sdk: {
+        session: { status: async () => ({ data: {} }) },
+        permission: { list: async () => ({ data: [] }) },
+        question: { list: async () => ({ data: [] }) },
+        app: { agents: async () => (calls.push("agents"), { data: [] }) },
+        config: { get: async () => (calls.push("config"), { data: {} }) },
+        vcs: { get: async () => (calls.push("vcs"), { data: undefined }) },
+        command: { list: async () => (calls.push("command"), { data: [] }) },
+        mcp: { status: async () => (calls.push("mcp"), { data: {} }) },
+        provider: { list: async () => (calls.push("provider"), { data: { all: [], connected: [], default: {} } }) },
+        v2: { reference: { list: async () => (calls.push("reference"), { data: { data: [] } }) } },
+      } as unknown as OpencodeClient,
+      store,
+      setStore,
+      vcsCache: { setStore() {} } as unknown as VcsCache,
+      loadSessions() {
+        calls.push("sessions")
+      },
+      translate: (key) => key,
+      queryClient: new QueryClient(),
+    })
+
+    expect(calls).toEqual(["sessions"])
   })
 })
 

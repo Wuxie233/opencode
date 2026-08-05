@@ -145,6 +145,7 @@ export const createDirSyncContext = (
     },
     mcp: {
       toggle: (name: string) => serverSync.mcp.toggle(directory, name),
+      resources: () => serverSync.mcp.resources(directory),
     },
     absolute,
     get directory() {

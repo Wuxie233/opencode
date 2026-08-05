@@ -36,6 +36,7 @@ import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { McpBrowser } from "./browser"
 
 const DEFAULT_TIMEOUT = 30_000
+export const RESOURCE_METADATA_TIMEOUT = 5_000
 const CLIENT_OPTIONS = {
   capabilities: {
     // https://github.com/anomalyco/opencode/issues/11948
@@ -727,7 +728,8 @@ const layer = Layer.effect(
     const resources = Effect.fn("MCP.resources")(function* (clientName?: string) {
       return yield* collectFromConnected(
         yield* InstanceState.get(state),
-        McpCatalog.resources,
+        (client, timeout) =>
+          McpCatalog.resources(client, Math.min(timeout ?? RESOURCE_METADATA_TIMEOUT, RESOURCE_METADATA_TIMEOUT)),
         "resources",
         (resource) => resource.uri,
         clientName,

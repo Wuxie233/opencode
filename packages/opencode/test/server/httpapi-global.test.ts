@@ -17,6 +17,7 @@ import { authorizationLayer } from "../../src/server/routes/instance/httpapi/mid
 import { schemaErrorLayer } from "../../src/server/routes/instance/httpapi/middleware/schema-error"
 import { testEffect } from "../lib/effect"
 import { GlobalBus } from "@/bus/global"
+import { Provider } from "@/provider/provider"
 
 const GlobalEvent = Schema.Struct({
   directory: Schema.optional(Schema.String),
@@ -60,6 +61,7 @@ const apiLayer = HttpRouter.serve(
 ).pipe(
   Layer.provideMerge(NodeHttpServer.layerTest),
   Layer.provide(Layer.mock(Auth.Service)({})),
+  Layer.provide(Layer.mock(Provider.Service)({})),
   Layer.provide(Layer.mock(Config.Service)({})),
   Layer.provide(Layer.mock(MoveSession.Service)({})),
   Layer.provide(

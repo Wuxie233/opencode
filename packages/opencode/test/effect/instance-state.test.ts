@@ -102,6 +102,28 @@ it.live("InstanceState invalidates on disposeAll", () =>
   }),
 )
 
+it.live("InstanceState rotate preserves old values and refreshes future lookups", () =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    const released: number[] = []
+    let n = 0
+    const state = yield* InstanceState.make(() =>
+      Effect.acquireRelease(
+        Effect.sync(() => ({ n: ++n })),
+        (value) => Effect.sync(() => released.push(value.n)),
+      ),
+    )
+
+    const old = yield* access(state, dir)
+    yield* InstanceState.rotate(state)
+    const fresh = yield* access(state, dir)
+
+    expect(old.n).toBe(1)
+    expect(fresh.n).toBe(2)
+    expect(released).toEqual([])
+  }),
+)
+
 it.live("InstanceState.get reads the current directory lazily", () =>
   Effect.gen(function* () {
     const one = yield* tmpdirScoped()

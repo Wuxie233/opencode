@@ -128,7 +128,7 @@ const SettingsProvidersContent: Component<{ onBack?: () => void }> = (props) => 
     await serverSDK()
       .client.auth.remove({ providerID })
       .then(async () => {
-        await serverSDK().client.global.dispose()
+        await serverSync().refreshProviders()
         showToast({
           variant: "success",
           icon: "circle-check",

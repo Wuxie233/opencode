@@ -83,9 +83,10 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
           })
         }
         if (capabilities.resources) {
-          protocol.setRequestHandler(ListResourcesRequestSchema, (request) => {
+          protocol.setRequestHandler(ListResourcesRequestSchema, async (request) => {
+            if (state.requestDelay) await Bun.sleep(state.requestDelay)
             const page = state.resourcePages?.[request.params?.cursor ?? "initial"]
-            return Promise.resolve({ resources: page?.items ?? state.resources, nextCursor: page?.nextCursor })
+            return { resources: page?.items ?? state.resources, nextCursor: page?.nextCursor }
           })
           protocol.setRequestHandler(ListResourceTemplatesRequestSchema, (request) => {
             const page = state.resourceTemplatePages?.[request.params?.cursor ?? "initial"]
@@ -431,6 +432,26 @@ it.instance("uses per-server timeouts for prompt and resource requests", () =>
     expect(yield* mcp.getPrompt("timeout-server", "test")).toBeUndefined()
     expect(yield* mcp.readResource("timeout-server", "test://resource")).toBeUndefined()
   }),
+)
+
+it.instance(
+  "caps resource metadata timeout without changing resource reads",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* lifecycleServer()
+      server.state.requestDelay = 5_100
+      server.state.resources = [{ name: "slow", uri: "test://slow" }]
+      const mcp = yield* MCP.Service
+      yield* mcp.add("slow-metadata", remote(server.url, 6_000))
+
+      const started = Date.now()
+      expect(yield* mcp.resources()).toEqual({})
+      expect(Date.now() - started).toBeLessThan(5_800)
+      expect(yield* mcp.readResource("slow-metadata", "test://slow")).toEqual({
+        contents: [{ uri: "test://slow", text: "resource result" }],
+      })
+    }),
+  { timeout: 15_000 },
 )
 
 it.instance("connects resource-only, prompt-only, and tools-only servers", () =>

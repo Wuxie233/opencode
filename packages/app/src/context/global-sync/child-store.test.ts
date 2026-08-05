@@ -34,7 +34,6 @@ const queryOptionsApi = {
   }),
   agents: (directory: string) => ({ queryKey: [directory, "agents"], queryFn: async () => [] }),
   mcp: (directory: string) => ({ queryKey: [directory, "mcp"], queryFn: async () => ({}) }),
-  mcpResources: (directory: string) => ({ queryKey: [directory, "mcpResources"], queryFn: async () => ({}) }),
   lsp: (directory: string) => ({ queryKey: [directory, "lsp"], queryFn: async () => [] }),
   references: (directory: string) => ({ queryKey: [directory, "references"], queryFn: async () => [] }),
   sessions: (directory: string) => ({ queryKey: [directory, "loadSessions"] as const }),
@@ -89,6 +88,7 @@ describe("createChildStoreManager", () => {
       isLoadingSessions: () => false,
       onBootstrap() {},
       onMcp() {},
+      onMcpResources: async () => ({}),
       onDispose() {},
       translate: (key) => key,
       queryOptions: queryOptionsApi,
@@ -122,6 +122,7 @@ describe("createChildStoreManager", () => {
           bootstraps.push(directory)
         },
         onMcp() {},
+        onMcpResources: async () => ({}),
         onDispose() {},
         translate: (key) => key,
         queryOptions: queryOptionsApi,
@@ -154,6 +155,7 @@ describe("createChildStoreManager", () => {
         isLoadingSessions: () => false,
         onBootstrap() {},
         onMcp() {},
+        onMcpResources: async () => ({}),
         onDispose() {},
         translate: (key) => key,
         queryOptions: queryOptionsApi,
@@ -189,6 +191,7 @@ describe("createChildStoreManager", () => {
         onMcp(directory) {
           mcpLoads.push(directory)
         },
+        onMcpResources: async () => ({}),
         onDispose() {},
         translate: (key) => key,
         queryOptions: queryOptionsApi,
@@ -199,18 +202,14 @@ describe("createChildStoreManager", () => {
     try {
       if (!manager) throw new Error("manager required")
       const [store, setStore] = manager.child("/project", { bootstrap: false })
-      expect(querySingles.length - offset).toBe(6)
+      expect(querySingles.length - offset).toBe(5)
       const query = querySingles[offset + 1]
-      const resourceQuery = querySingles[offset + 2]
       if (!query) throw new Error("query required")
-      if (!resourceQuery) throw new Error("resource query required")
       expect(query().enabled).toBe(false)
-      expect(resourceQuery().enabled).toBe(false)
 
       setStore("status", "complete")
       manager.child("/project", { bootstrap: false, mcp: true })
       expect(query().enabled).toBe(true)
-      expect(resourceQuery().enabled).toBe(true)
       expect(store.mcp).toEqual({ demo: { status: "disabled" } })
       expect(mcpLoads).toEqual(["/project"])
 
@@ -238,6 +237,7 @@ describe("createChildStoreManager", () => {
           bootstraps.push(directory)
         },
         onMcp() {},
+        onMcpResources: async () => ({}),
         onDispose() {},
         translate: (key) => key,
         queryOptions: queryOptionsApi,
@@ -250,11 +250,11 @@ describe("createChildStoreManager", () => {
       const [store] = manager.child("/project", { bootstrap: false })
       const queries = querySingles.slice(offset)
 
-      expect(queries).toHaveLength(6)
+      expect(queries).toHaveLength(5)
       expect(queries[0]?.().enabled).toBe(false)
+      expect(queries[2]?.().enabled).toBe(false)
       expect(queries[3]?.().enabled).toBe(false)
       expect(queries[4]?.().enabled).toBe(false)
-      expect(queries[5]?.().enabled).toBe(false)
       expect(store.path.directory).toBe("/project")
       expect(store.provider_ready).toBe(false)
       expect(store.lsp_ready).toBe(false)
@@ -262,13 +262,107 @@ describe("createChildStoreManager", () => {
 
       manager.child("/project")
       expect(queries[0]?.().enabled).toBe(true)
+      expect(queries[2]?.().enabled).toBe(true)
       expect(queries[3]?.().enabled).toBe(true)
       expect(queries[4]?.().enabled).toBe(true)
-      expect(queries[5]?.().enabled).toBe(true)
       expect(bootstraps).toEqual(["/project"])
 
       manager.child("/project", { bootstrap: false })
       expect(queries[0]?.().enabled).toBe(true)
+    } finally {
+      dispose()
+    }
+  })
+
+  test("loads MCP resources once, retries after invalidation, and cools down failures", async () => {
+    let manager: ReturnType<typeof createChildStoreManager> | undefined
+    let attempts = 0
+    const gate = Promise.withResolvers<void>()
+
+    const dispose = createOwner((owner) => {
+      manager = createChildStoreManager({
+        owner,
+        scope: ServerScope.local,
+        persist,
+        isBooting: () => false,
+        isLoadingSessions: () => false,
+        onBootstrap() {},
+        onMcp() {},
+        onMcpResources: async () => {
+          attempts++
+          if (attempts === 1) await gate.promise
+          if (attempts === 3) throw new Error("offline")
+          return {
+            docs: { name: "docs", uri: "docs://readme", client: "test" },
+          }
+        },
+        onDispose() {},
+        translate: (key) => key,
+        queryOptions: queryOptionsApi,
+        global: { provider },
+      })
+    })
+
+    try {
+      if (!manager) throw new Error("manager required")
+      const first = manager.loadMcpResources("/project")
+      const joined = manager.loadMcpResources("/project")
+      expect(attempts).toBe(1)
+      gate.resolve()
+      await Promise.all([first, joined])
+      expect(manager.children["/project"]?.[0].mcp_resource.docs?.uri).toBe("docs://readme")
+
+      await manager.loadMcpResources("/project")
+      expect(attempts).toBe(1)
+      manager.invalidateMcpResources("/project")
+      await manager.loadMcpResources("/project")
+      expect(attempts).toBe(2)
+
+      manager.invalidateMcpResources("/project")
+      await manager.loadMcpResources("/project")
+      await manager.loadMcpResources("/project")
+      expect(attempts).toBe(3)
+    } finally {
+      dispose()
+    }
+  })
+
+  test("starts a fresh resource request after invalidating an in-flight load", async () => {
+    let manager: ReturnType<typeof createChildStoreManager> | undefined
+    const first = Promise.withResolvers<State["mcp_resource"]>()
+    let attempts = 0
+
+    const dispose = createOwner((owner) => {
+      manager = createChildStoreManager({
+        owner,
+        scope: ServerScope.local,
+        persist,
+        isBooting: () => false,
+        isLoadingSessions: () => false,
+        onBootstrap() {},
+        onMcp() {},
+        onMcpResources: async () => {
+          attempts++
+          if (attempts === 1) return first.promise
+          return { fresh: { name: "fresh", uri: "docs://fresh", client: "test" } }
+        },
+        onDispose() {},
+        translate: (key) => key,
+        queryOptions: queryOptionsApi,
+        global: { provider },
+      })
+    })
+
+    try {
+      if (!manager) throw new Error("manager required")
+      const stale = manager.loadMcpResources("/project")
+      manager.invalidateMcpResources("/project")
+      await manager.loadMcpResources("/project")
+      first.resolve({ stale: { name: "stale", uri: "docs://stale", client: "test" } })
+      await stale
+
+      expect(attempts).toBe(2)
+      expect(Object.keys(manager.children["/project"]?.[0].mcp_resource ?? {})).toEqual(["fresh"])
     } finally {
       dispose()
     }

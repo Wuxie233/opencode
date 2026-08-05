@@ -9,6 +9,23 @@ const TypeId = "~opencode/InstanceState"
 export interface InstanceState<A, E = never, R = never> {
   readonly [TypeId]: typeof TypeId
   readonly cache: ScopedCache.ScopedCache<string, A, E, R>
+  readonly version: { value: number }
+  readonly keys: Map<string, Set<string>>
+}
+
+function cacheKey<A, E, R>(self: InstanceState<A, E, R>, directory: string) {
+  const key = `${self.version.value}:${directory}`
+  const keys = self.keys.get(directory)
+  if (keys) keys.add(key)
+  if (!keys) self.keys.set(directory, new Set([key]))
+  return key
+}
+
+function invalidateDirectory<A, E, R>(self: InstanceState<A, E, R>, directory: string) {
+  const keys = self.keys.get(directory)
+  if (!keys) return Effect.void
+  self.keys.delete(directory)
+  return Effect.forEach(keys, (key) => ScopedCache.invalidate(self.cache, key), { discard: true })
 }
 
 export const context = Effect.gen(function* () {
@@ -38,18 +55,19 @@ export const make = <A, E = never, R = never>(
         }),
     })
 
-    const off = registerDisposer((directory) => Effect.runPromise(ScopedCache.invalidate(cache, directory)))
+    const version = { value: 0 }
+    const keys = new Map<string, Set<string>>()
+    const self: InstanceState<A, E, Exclude<R, Scope.Scope>> = { [TypeId]: TypeId, cache, version, keys }
+    const off = registerDisposer((directory) => Effect.runPromise(invalidateDirectory(self, directory)))
     yield* Effect.addFinalizer(() => Effect.sync(off))
 
-    return {
-      [TypeId]: TypeId,
-      cache,
-    }
+    return self
   })
 
 export const get = <A, E, R>(self: InstanceState<A, E, R>) =>
   Effect.gen(function* () {
-    return yield* ScopedCache.get(self.cache, yield* directory)
+    const current = yield* directory
+    return yield* ScopedCache.get(self.cache, cacheKey(self, current))
   })
 
 export const use = <A, E, R, B>(self: InstanceState<A, E, R>, select: (value: A) => B) => Effect.map(get(self), select)
@@ -61,12 +79,25 @@ export const useEffect = <A, E, R, B, E2, R2>(
 
 export const has = <A, E, R>(self: InstanceState<A, E, R>) =>
   Effect.gen(function* () {
-    return yield* ScopedCache.has(self.cache, yield* directory)
+    const current = yield* directory
+    return yield* ScopedCache.has(self.cache, cacheKey(self, current))
   })
 
 export const invalidate = <A, E, R>(self: InstanceState<A, E, R>) =>
   Effect.gen(function* () {
-    return yield* ScopedCache.invalidate(self.cache, yield* directory)
+    return yield* invalidateDirectory(self, yield* directory)
+  })
+
+export const invalidateAll = <A, E, R>(self: InstanceState<A, E, R>) =>
+  Effect.gen(function* () {
+    self.keys.clear()
+    yield* ScopedCache.invalidateAll(self.cache)
+  })
+
+// Future lookups use a fresh generation while existing scoped values remain valid.
+export const rotate = <A, E, R>(self: InstanceState<A, E, R>) =>
+  Effect.sync(() => {
+    self.version.value++
   })
 
 export * as InstanceState from "./instance-state"

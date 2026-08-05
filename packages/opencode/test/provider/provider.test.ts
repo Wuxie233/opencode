@@ -121,6 +121,22 @@ it.instance("provider loaded from env variable", () =>
   }),
 )
 
+it.instance("provider invalidation preserves old values and reads new credentials", () =>
+  Effect.gen(function* () {
+    yield* setProcessEnv("OPENCODE_AUTH_CONTENT", JSON.stringify({ openai: { type: "api", key: "old-key" } }))
+    const provider = yield* Provider.Service
+    const old = yield* provider.list()
+
+    yield* setProcessEnv("OPENCODE_AUTH_CONTENT", JSON.stringify({ openai: { type: "api", key: "new-key" } }))
+    yield* provider.invalidate()
+    const fresh = yield* provider.list()
+
+    expect(old[ProviderV2.ID.openai].key).toBe("old-key")
+    expect(fresh[ProviderV2.ID.openai].key).toBe("new-key")
+    expect(old[ProviderV2.ID.openai].key).toBe("old-key")
+  }),
+)
+
 it.instance(
   "provider loaded from config with apiKey option",
   Effect.gen(function* () {

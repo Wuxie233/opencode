@@ -17,6 +17,7 @@ import { globalHandlers } from "../../src/server/routes/instance/httpapi/handler
 import { authorizationLayer } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { schemaErrorLayer } from "../../src/server/routes/instance/httpapi/middleware/schema-error"
 import { testEffect } from "../lib/effect"
+import { Provider } from "@/provider/provider"
 
 const input = MoveSession.Input.make({
   sessionID: SessionV2.ID.make("ses_move"),
@@ -24,6 +25,7 @@ const input = MoveSession.Input.make({
   moveChanges: true,
 })
 const called = Ref.makeUnsafe<MoveSession.Input | undefined>(undefined)
+const providerInvalidations = Ref.makeUnsafe(0)
 
 const apiLayer = HttpRouter.serve(
   HttpApiBuilder.layer(RootHttpApi).pipe(
@@ -36,7 +38,17 @@ const apiLayer = HttpRouter.serve(
   { disableListenLog: true, disableLogger: true },
 ).pipe(
   Layer.provideMerge(NodeHttpServer.layerTest),
-  Layer.provide(Layer.mock(Auth.Service)({})),
+  Layer.provide(
+    Layer.mock(Auth.Service)({
+      set: () => Effect.void,
+      remove: () => Effect.void,
+    }),
+  ),
+  Layer.provide(
+    Layer.mock(Provider.Service)({
+      invalidate: () => Ref.update(providerInvalidations, (value) => value + 1),
+    }),
+  ),
   Layer.provide(Layer.mock(Config.Service)({})),
   Layer.provide(Layer.mock(Installation.Service)({})),
   Layer.provide(
@@ -58,6 +70,29 @@ describe("control-plane HttpApi", () => {
 
       expect(response.status).toBe(204)
       expect(yield* Ref.get(called)).toEqual(input)
+    }),
+  )
+
+  it.live("invalidates provider lookups after setting credentials", () =>
+    Effect.gen(function* () {
+      yield* Ref.set(providerInvalidations, 0)
+      const response = yield* HttpClientRequest.put("/auth/test-provider").pipe(
+        HttpClientRequest.setBody(HttpBody.jsonUnsafe({ type: "api", key: "new-key" })),
+        HttpClient.execute,
+      )
+
+      expect(response.status).toBe(200)
+      expect(yield* Ref.get(providerInvalidations)).toBe(1)
+    }),
+  )
+
+  it.live("invalidates provider lookups after removing credentials", () =>
+    Effect.gen(function* () {
+      yield* Ref.set(providerInvalidations, 0)
+      const response = yield* HttpClientRequest.delete("/auth/test-provider").pipe(HttpClient.execute)
+
+      expect(response.status).toBe(200)
+      expect(yield* Ref.get(providerInvalidations)).toBe(1)
     }),
   )
 })
