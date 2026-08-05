@@ -1357,7 +1357,27 @@ const layer = Layer.effect(
               }
             }
 
-            if (result === "stop") return "break" as const
+            if (result === "stop" && !handle.recover) return "break" as const
+            if (handle.recover) {
+              const continueMsg = yield* sessions.updateMessage({
+                id: MessageID.ascending(),
+                role: "user",
+                sessionID,
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+              })
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: continueMsg.id,
+                sessionID,
+                type: "text",
+                text: "Please continue from the partial response above. Do not repeat completed work or tool calls.",
+                synthetic: true,
+                metadata: { stream_read_continue: true },
+                time: { start: Date.now(), end: Date.now() },
+              })
+            }
             if (result === "compact") {
               yield* compaction.create({
                 sessionID,

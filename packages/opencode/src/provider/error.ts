@@ -99,6 +99,12 @@ export type ParsedStreamError =
       responseBody: string
     }
 
+export function isStreamReadError(input: unknown) {
+  const raw = json(input)
+  const body = typeof raw?.message === "string" ? (json(raw.message) ?? raw) : raw
+  return body?.type === "stream_read_error" || (body?.type === "error" && body?.error?.code === "stream_read_error")
+}
+
 export function parseStreamError(input: unknown): ParsedStreamError | undefined {
   const raw = json(input)
   const body = typeof raw?.message === "string" ? (json(raw.message) ?? raw) : raw

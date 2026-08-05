@@ -162,6 +162,7 @@ const table = sqliteTable("session", {
 
 - Classify provider stream failures in `ProviderError.parseStreamError()` before the session retry policy. Exact `type: "stream_read_error"` events and nested `error.code: "stream_read_error"` events are transient; map them to retryable `APIError` while preserving the provider message and serialized body.
 - Keep replay safety in `SessionProcessor`: an HTTP 200 stream error may retry only before non-empty text or reasoning, tool activity, or a patch is visible. Do not broaden provider error matching into generic message substring checks.
+- After visible output or tool/patch activity, an exact `stream_read_error` must preserve the failed assistant turn and its structured error, then let legacy `SessionPrompt` continue in a new synthetic user turn. Never use this continuation path for generic stream errors, aborts, context overflow, or content filtering, and never replay the failed provider turn or completed tool calls.
 
 ## Routed Skills
 

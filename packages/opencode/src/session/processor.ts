@@ -48,6 +48,7 @@ export interface Handle {
     },
   ) => Effect.Effect<void>
   readonly process: (streamInput: LLM.StreamInput) => Effect.Effect<Result>
+  readonly recover: boolean
 }
 
 type Input = {
@@ -73,6 +74,7 @@ interface ProcessorContext extends Input {
   snapshot: string | undefined
   blocked: boolean
   needsCompaction: boolean
+  streamReadError: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
 }
@@ -113,6 +115,7 @@ const layer = Layer.effect(
         snapshot: initialSnapshot,
         blocked: false,
         needsCompaction: false,
+        streamReadError: false,
         currentText: undefined,
         reasoningMap: {},
       }
@@ -616,6 +619,7 @@ const layer = Layer.effect(
           stack: e instanceof Error ? e.stack : undefined,
         })
         const error = parse(e)
+        ctx.streamReadError = ProviderError.isStreamReadError(e)
         if (SessionV1.ContextOverflowError.isInstance(error)) {
           if ((yield* config.get()).compaction?.auto === false && !ctx.assistantMessage.summary) {
             ctx.assistantMessage.error = error
@@ -649,6 +653,7 @@ const layer = Layer.effect(
         return yield* Effect.gen(function* () {
           yield* Effect.gen(function* () {
             lastAttemptWasEmpty = false
+            ctx.streamReadError = false
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             attemptVisible = false
@@ -715,6 +720,9 @@ const layer = Layer.effect(
       return {
         get message() {
           return ctx.assistantMessage
+        },
+        get recover() {
+          return ctx.streamReadError && attemptVisible
         },
         updateToolCall,
         completeToolCall,
