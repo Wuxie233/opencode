@@ -158,6 +158,11 @@ const table = sqliteTable("session", {
 - Static UI catch-all requests are excluded. Streaming totals stop when the response is ready, not when the body or SSE connection closes.
 - On this host, query `/flyshop/opencode/local-share/log/opencode.log` for `event=http_request`; `/etc/logrotate.d/opencode` bounds that append-only file without restarting the service and must match `packages/opencode/deploy/opencode.logrotate`.
 
+## Provider Stream Retries
+
+- Classify provider stream failures in `ProviderError.parseStreamError()` before the session retry policy. Exact `type: "stream_read_error"` events and nested `error.code: "stream_read_error"` events are transient; map them to retryable `APIError` while preserving the provider message and serialized body.
+- Keep replay safety in `SessionProcessor`: an HTTP 200 stream error may retry only before non-empty text or reasoning, tool activity, or a patch is visible. Do not broaden provider error matching into generic message substring checks.
+
 ## Routed Skills
 
 - Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.

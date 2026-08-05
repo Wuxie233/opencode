@@ -105,6 +105,14 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
   if (!body) return
 
   const responseBody = JSON.stringify(body)
+  if (body.type === "stream_read_error") {
+    return {
+      type: "api_error",
+      message: typeof body.message === "string" ? body.message : "Provider stream read failed.",
+      isRetryable: true,
+      responseBody,
+    }
+  }
   if (body.type !== "error") return
 
   switch (body?.error?.code) {
@@ -140,6 +148,13 @@ export function parseStreamError(input: unknown): ParsedStreamError | undefined 
       return {
         type: "api_error",
         message: typeof body?.error?.message === "string" ? body?.error?.message : "Server error.",
+        isRetryable: true,
+        responseBody,
+      }
+    case "stream_read_error":
+      return {
+        type: "api_error",
+        message: typeof body?.error?.message === "string" ? body.error.message : "Provider stream read failed.",
         isRetryable: true,
         responseBody,
       }

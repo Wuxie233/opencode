@@ -254,6 +254,13 @@ function retryGateEnv(first: Stream.Stream<LLMEvent, unknown>) {
 }
 
 const errorOnlyRetry = retryGateEnv(Stream.fail(new ProviderError.ResponseStreamError("HTTP 200 stream error")))
+const streamReadErrorRetry = retryGateEnv(
+  Stream.fail({
+    type: "error",
+    sequence_number: 0,
+    error: { type: "upstream_error", code: "stream_read_error", message: "stream_read_error" },
+  }),
+)
 const emptySuccessRetry = retryGateEnv(
   Stream.make(
     LLMEvent.stepStart({ index: 0 }),
@@ -1355,6 +1362,17 @@ errorOnlyRetry.it.live("session.processor retries an error-only HTTP 200 stream 
 
     expect(result.result).toBe("continue")
     expect(errorOnlyRetry.calls()).toBe(2)
+    expect(result.handle.message.error).toBeUndefined()
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "recovered" })]))
+  }),
+)
+
+streamReadErrorRetry.it.live("session.processor retries a structured provider stream read error", () =>
+  Effect.gen(function* () {
+    const result = yield* processOnce("retry provider stream read error")
+
+    expect(result.result).toBe("continue")
+    expect(streamReadErrorRetry.calls()).toBe(2)
     expect(result.handle.message.error).toBeUndefined()
     expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ type: "text", text: "recovered" })]))
   }),

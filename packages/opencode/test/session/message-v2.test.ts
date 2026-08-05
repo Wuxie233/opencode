@@ -1552,6 +1552,27 @@ describe("session.message-v2.fromError", () => {
 
     expect(result.name).toBe("MessageAbortedError")
   })
+
+  test.each([
+    {
+      input: {
+        type: "error",
+        sequence_number: 0,
+        error: { type: "upstream_error", code: "stream_read_error", message: "stream_read_error" },
+      },
+      message: "stream_read_error",
+    },
+    {
+      input: { type: "stream_read_error", message: "upstream stream disconnected: unexpected EOF" },
+      message: "upstream stream disconnected: unexpected EOF",
+    },
+  ])("classifies provider stream read errors as retryable APIError", ({ input, message }) => {
+    const result = MessageV2.fromError(input, { providerID })
+
+    expect(SessionV1.APIError.isInstance(result)).toBe(true)
+    expect((result as SessionV1.APIError).data.isRetryable).toBe(true)
+    expect((result as SessionV1.APIError).data.message).toBe(message)
+  })
 })
 
 describe("session.message-v2.latest", () => {
