@@ -306,6 +306,19 @@ describe("session.retry.retryable", () => {
     })
   })
 
+  test("retries structured provider stream read errors", () => {
+    const request = MessageV2.fromError(
+      {
+        type: "error",
+        sequence_number: 0,
+        error: { type: "upstream_error", code: "stream_read_error", message: "stream_read_error" },
+      },
+      { providerID },
+    )
+    expect(SessionV1.APIError.isInstance(request)).toBe(true)
+    expect(SessionRetry.retryable(request, retryProvider)).toEqual({ message: "stream_read_error" })
+  })
+
   test("does not retry context overflow errors", () => {
     const error = new SessionV1.ContextOverflowError({
       message: "Input exceeds context window of this model",

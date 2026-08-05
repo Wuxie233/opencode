@@ -148,6 +148,28 @@ const table = sqliteTable("session", {
 
 - Always run `bun typecheck` from package directories (e.g., `packages/opencode`), never `tsc` directly.
 
+## Local Runtime Staging
+
+- After verified OpenCode core changes intended for this host, build an immutable runtime release and atomically stage `/opt/opencode-runtime/bin/opencode` by default so the user's next manual restart loads it. Never restart OpenCode automatically. Skip staging only when the user explicitly requests source-only work or when a build/deployment blocker is reported.
+
+## HTTP Performance Logs
+
+- The server records one privacy-safe `event=http_request` entry for each matched API route when its response is ready. Fields use the normalized route template plus method, status, total milliseconds, and available fixed phase timings; never add concrete URLs, route params, query values, headers, directories, request/response bodies, or session content.
+- Static UI catch-all requests are excluded. Streaming totals stop when the response is ready, not when the body or SSE connection closes.
+- On this host, query `/flyshop/opencode/local-share/log/opencode.log` for `event=http_request`; `/etc/logrotate.d/opencode` bounds that append-only file without restarting the service and must match `packages/opencode/deploy/opencode.logrotate`.
+
+## Provider Stream Retries
+
+- Classify provider stream failures in `ProviderError.parseStreamError()` before the session retry policy. Exact `type: "stream_read_error"` events and nested `error.code: "stream_read_error"` events are transient; map them to retryable `APIError` while preserving the provider message and serialized body.
+- Keep replay safety in `SessionProcessor`: an HTTP 200 stream error may retry only before non-empty text or reasoning, tool activity, or a patch is visible. Do not broaden provider error matching into generic message substring checks.
+
+## Routed Skills
+
+- Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.
+- Root guidance includes root skills and fail-open routed skills whose permitted router path is missing, denied, explicit-only, or cyclic. Loading a router lists only its directly routed, permitted children; exact-name loading remains available for every registered skill.
+- Keep routed-skill selection derived from the current skill registry and agent permissions. Do not persist loaded-router state in sessions or expand routed children into global guidance.
+- Until legacy `SessionPrompt` is retired, keep Routed Skills frontmatter parsing, root guidance, tool catalogs, and focused tests aligned in both `packages/opencode` and Core V2; production Web/API sessions still use the legacy path.
+
 ## V2 Session Core
 
 - Keep durable prompt admission separate from model execution. `SessionV2.prompt(...)` admits one durable `session_input` row before scheduling advisory `SessionExecution.wake(sessionID)` unless `resume: false` requests admit-only behavior. The serialized runner promotes admitted inputs into visible user messages at safe boundaries.
