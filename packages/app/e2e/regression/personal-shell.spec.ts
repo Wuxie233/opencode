@@ -124,6 +124,97 @@ test("keeps the conversation tab open when archive fails", async ({ page }) => {
   await expect(rail.getByRole("button", { name: /Alpha session/ })).toHaveAttribute("aria-current", "page")
   await expect(page.getByText("Request failed", { exact: true })).toBeVisible()
 })
+
+test("switches between recent conversations and project filtering", async ({ page }) => {
+  const now = new Date()
+  const today = now.getTime()
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 12).getTime()
+  const older = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 3, 12).getTime()
+  const secondProject = {
+    id: "project-personal-api",
+    worktree: "C:/OpenCode/PersonalApi",
+    vcs: "git",
+    name: "Personal API",
+    time: { created: 1, updated: 2 },
+    sandboxes: [],
+  }
+  const recentSessions = [
+    session("ses_today", "Today app task", today),
+    {
+      ...session("ses_yesterday", "Yesterday API task", yesterday),
+      projectID: secondProject.id,
+      directory: secondProject.worktree,
+    },
+    {
+      ...session("ses_older", "Older API task", older),
+      projectID: secondProject.id,
+      directory: secondProject.worktree,
+    },
+  ]
+
+  await mockOpenCodeServer(page, {
+    directory,
+    project: [project, secondProject],
+    provider: { all: [], connected: [], default: {} },
+    sessions: recentSessions,
+    pageMessages: () => ({ items: [] }),
+  })
+  await installPersonalState(page, "light", [directory, secondProject.worktree], [])
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto("/")
+
+  const recent = page.getByRole("button", { name: "Recent sessions" })
+  await expect(recent).toHaveAttribute("aria-current", "page")
+  await expect(page.getByText("Today", { exact: true })).toBeVisible()
+  await expect(page.getByText("Yesterday", { exact: true })).toBeVisible()
+  await expect(page.getByText("Older", { exact: true })).toBeVisible()
+  await expect(page.locator('[data-component="home-session-row"]')).toHaveText([
+    /Today app task.*Personal Shell/,
+    /Yesterday API task.*Personal API/,
+    /Older API task.*Personal API/,
+  ])
+
+  await page.locator('[data-component="home-project-row"]').filter({ hasText: "Personal API" }).click()
+  await expect(recent).not.toHaveAttribute("aria-current", "page")
+  await expect(page.locator('[data-component="home-session-row"]')).toHaveText([
+    /Yesterday API task/,
+    /Older API task/,
+  ])
+
+  await recent.click()
+  await expect(recent).toHaveAttribute("aria-current", "page")
+  await expect(page.locator('[data-component="home-session-row"]')).toHaveCount(3)
+})
+
+test("shows descendant realtime work on its open root conversation", async ({ page }) => {
+  const child = { ...session("ses_child", "Background child", 4), parentID: "ses_alpha" }
+  const events = [
+    {
+      directory,
+      payload: {
+        type: "session.status",
+        properties: { sessionID: child.id, status: { type: "busy" } },
+      },
+    },
+  ]
+  await mockOpenCodeServer(page, {
+    directory,
+    project: [project, emptyProject],
+    provider: { all: [], connected: [], default: {} },
+    sessions: [...sessions, child],
+    pageMessages: () => ({ items: [] }),
+    sessionStatus: {},
+    events: () => events.splice(0, 1),
+    eventRetry: 16,
+  })
+  await installPersonalState(page, "light")
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto("/")
+
+  const root = page.locator("aside.personal-rail").getByRole("button", { name: /Alpha session/ })
+  await expect(root).toContainText("Running")
+  await expect(root).toHaveAttribute("title", /Running/)
+})
 const emptyProject = {
   id: "project-empty",
   worktree: "C:/OpenCode/EmptyProject",
@@ -228,15 +319,20 @@ async function setup(
   await installPersonalState(page, scheme)
 }
 
-async function installPersonalState(page: Page, scheme: "light" | "dark") {
+async function installPersonalState(
+  page: Page,
+  scheme: "light" | "dark",
+  projects = [directory],
+  sessionIDs = ["ses_alpha", "ses_beta"],
+) {
   await page.addInitScript(
-    ({ directory, scheme, server }) => {
+    ({ directory, projects, scheme, server, sessionIDs }) => {
       localStorage.setItem("settings.v3", JSON.stringify({ general: { newLayoutDesigns: true } }))
       localStorage.setItem("opencode-color-scheme", scheme)
       localStorage.setItem(
         "opencode.global.dat:server.projects",
         JSON.stringify({
-          projects: { local: [{ worktree: directory, expanded: true }] },
+          projects: { local: projects.map((worktree) => ({ worktree, expanded: true })) },
           lastProject: { local: directory },
           recentlyClosed: {},
         }),
@@ -244,13 +340,10 @@ async function installPersonalState(page: Page, scheme: "light" | "dark") {
       localStorage.setItem("opencode.global.dat:server", JSON.stringify({ list: [], active: server }))
       localStorage.setItem(
         "opencode.global.dat:tabs",
-        JSON.stringify([
-          { type: "session", server, sessionId: "ses_alpha" },
-          { type: "session", server, sessionId: "ses_beta" },
-        ]),
+        JSON.stringify(sessionIDs.map((sessionId) => ({ type: "session", server, sessionId }))),
       )
     },
-    { directory, scheme, server },
+    { directory, projects, scheme, server, sessionIDs },
   )
 }
 

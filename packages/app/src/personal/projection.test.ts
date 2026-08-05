@@ -165,6 +165,37 @@ describe("personalProjection", () => {
     expect(result.projects[0]?.sessions.find((item) => item.sessionId === "unknown")?.state).toBe("unknown")
   })
 
+  test("projects descendant runtime work onto the open root session", () => {
+    const result = personalProjection({
+      servers: [
+        source({
+          sessions: [
+            { id: "root", directory: "/work/app", title: "Root", updated: 30 },
+            { id: "child", parentID: "root", directory: "/work/app", title: "Child", updated: 20 },
+            { id: "leaf", parentID: "child", directory: "/work/app", title: "Leaf", updated: 10 },
+          ],
+          status: {
+            [personalDirectorySessionKey("/work/app", "root")]: "idle",
+            [personalDirectorySessionKey("/work/app", "child")]: "retry",
+            [personalDirectorySessionKey("/work/app", "leaf")]: "busy",
+          },
+        }),
+      ],
+      tabs: [
+        { key: "root-tab", tab: { type: "session", server: serverA, sessionId: "root" }, directory: "/work/app" },
+      ],
+      route: { type: "home" },
+    })
+
+    expect(result.projects).toHaveLength(1)
+    expect(result.projects[0]?.sessions).toHaveLength(1)
+    expect(result.projects[0]?.sessions[0]).toMatchObject({
+      sessionId: "root",
+      state: "busy",
+      runtimeState: "busy",
+    })
+  })
+
   test("deduplicates attention when a question is also retrying", () => {
     const result = personalProjection({
       servers: [

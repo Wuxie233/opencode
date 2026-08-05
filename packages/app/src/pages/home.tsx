@@ -656,6 +656,7 @@ export function NewHome() {
             homedir={homedir()}
             selected={selection()}
             focusServer={focusServer}
+            showRecent={(conn) => setSelection({ server: ServerConnection.key(conn) })}
             selectProject={selectProject}
             openNewSession={openProjectNewSession}
             openRecentProject={(conn, directory) => addProjects(conn, [directory])}
@@ -795,6 +796,7 @@ function HomeProjectColumn(props: {
   homedir: string
   selected: HomeProjectSelection
   focusServer: (server: ServerConnection.Any) => void
+  showRecent: (server: ServerConnection.Any) => void
   selectProject: (server: ServerConnection.Any, directory: string) => void
   openNewSession: (server: ServerConnection.Any, directory: string) => void
   openRecentProject: (server: ServerConnection.Any, directory: string) => void
@@ -854,6 +856,8 @@ function HomeProjectColumn(props: {
           when={global.servers.list().length > 1}
           fallback={
             <div class="pr-3">
+              <HomeRecentSessionsRow {...props} server={global.servers.list()[0]!} />
+              <div class="mx-3 my-0.5 h-px bg-v2-border-border-base" />
               <Show
                 when={props.projects.length > 0}
                 fallback={
@@ -885,7 +889,6 @@ function HomeProjectColumn(props: {
                   <div class="flex min-w-0 flex-col gap-1">
                     <HomeServerRow
                       server={item}
-                      selected={props.selected.server === key && !props.selected.directory}
                       collapsed={collapsed()}
                       health={global.servers.health[key]}
                       controller={controller}
@@ -895,9 +898,12 @@ function HomeProjectColumn(props: {
                       toggleCollapsed={() => setState("collapsed", key, !state().collapsed[key])}
                       language={props.language}
                     />
-                    <Show when={healthy() && hasProjects() && !collapsed()}>
+                    <Show when={healthy() && !collapsed()}>
                       <div class="mx-3 h-px bg-v2-border-border-base" />
-                      <HomeProjectList {...props} server={item} projects={projects()} />
+                      <HomeRecentSessionsRow {...props} server={item} />
+                      <Show when={hasProjects()}>
+                        <HomeProjectList {...props} server={item} projects={projects()} />
+                      </Show>
                     </Show>
                   </div>
                 )
@@ -946,7 +952,6 @@ function HomeUtilityNav(props: {
 
 function HomeServerRow(props: {
   server: ServerConnection.Any
-  selected: boolean
   collapsed: boolean
   health: ServerHealth | undefined
   controller: ReturnType<typeof useServerManagementController>
@@ -965,7 +970,6 @@ function HomeServerRow(props: {
       <button
         type="button"
         class={`${HOME_PROJECT_NAV_ROW} pr-16 disabled:opacity-60`}
-        data-selected={props.selected ? "" : undefined}
         disabled={!healthy()}
         onClick={() => props.focusServer(props.server)}
       >
@@ -1041,6 +1045,7 @@ function HomeProjectList(props: {
   server: ServerConnection.Any
   projects: LocalProject[]
   selected: HomeProjectSelection
+  showRecent: (server: ServerConnection.Any) => void
   selectProject: (server: ServerConnection.Any, directory: string) => void
   openNewSession: (server: ServerConnection.Any, directory: string) => void
   editProject: (server: ServerConnection.Any, project: LocalProject) => void
@@ -1071,6 +1076,28 @@ function HomeProjectList(props: {
         )}
       </For>
     </div>
+  )
+}
+
+function HomeRecentSessionsRow(props: {
+  server: ServerConnection.Any
+  selected: HomeProjectSelection
+  showRecent: (server: ServerConnection.Any) => void
+  language: ReturnType<typeof useLanguage>
+}) {
+  const selected = () => props.selected.server === ServerConnection.key(props.server) && !props.selected.directory
+  return (
+    <button
+      type="button"
+      data-component="home-recent-sessions-row"
+      class={`${HOME_PROJECT_NAV_ROW} [&>[data-slot=icon-svg]]:text-v2-icon-icon-muted`}
+      data-selected={selected() ? "" : undefined}
+      aria-current={selected() ? "page" : undefined}
+      onClick={() => props.showRecent(props.server)}
+    >
+      <IconV2 name="status" size="small" />
+      <span class={HOME_PROJECT_NAV_LABEL}>{props.language.t("sidebar.project.recentSessions")}</span>
+    </button>
   )
 }
 

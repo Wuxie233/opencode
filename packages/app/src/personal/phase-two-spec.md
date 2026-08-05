@@ -21,12 +21,13 @@ One operator moves repeatedly between several open projects and session tabs, ne
 - Reuse `useLayout().mobileSidebar` and the native drawer primitives for a mobile navigation drawer that closes after navigation and restores focus.
 - Put Personal UI copy in the app i18n dictionaries. Keep technical identifiers unchanged.
 - Preserve native titlebar, Home, draft, Session, timeline, composer, request docks, review, files, terminal, models, providers, MCP, notifications, and toast behavior.
+- Add an explicit Recent sessions row above the Home project list. It selects the existing server-wide Home timeline; project rows continue to scope that same timeline by directory.
 
 ## Data Contract
 
 - Session metadata and global blocking discovery reuse `loadHomeSessionIndex` and the per-server TanStack query caches. Do not add a second backend API or persistence store.
 - Project metadata comes from `useGlobal().ensureServerCtx(conn).projects.list()`.
-- Runtime status and pending requests come from the existing directory-scoped `sync.child(directory)` / `sync.session.data` state. Root attention counts include descendant requests and exclude auto-respond permissions. An unloaded directory is unknown, not idle or clear.
+- Runtime status and pending requests come from the server-level realtime `sync.session.data` state, keyed back to their directory through native session metadata. Root status and attention counts include descendants; a busy descendant makes the root busy, otherwise retry outranks idle. Auto-respond permissions are excluded. An unloaded directory is unknown, not idle or clear.
 - Unread completion and error state comes from the native notification store and is keyed by server, directory, and session. Opening a session clears only that directory's matching notifications through native viewed semantics.
 - Tabs and drafts remain owned by `useTabs()`. New sessions use `tabs.newDraft`; opening a session uses eager native tab selection so browser history and the active row update before target data, while Router popstate handling preserves leave guards and one history entry.
 - Archive uses the existing directory-aware session update helper and removes the archived session from tabs and Personal projections through native events/cache updates after success.

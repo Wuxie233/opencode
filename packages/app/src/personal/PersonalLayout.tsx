@@ -168,12 +168,11 @@ export default function PersonalLayout(props: ParentProps) {
             }),
           ),
           status: Object.fromEntries(
-            [...directoryStores].flatMap(([directory, store]) =>
-              Object.entries(store.session_status).map(([id, value]) => [
-                personalDirectorySessionKey(directory, id),
-                value?.type,
-              ]),
-            ),
+            Object.entries(ctx.sync.session.data.session_status).flatMap(([id, value]) => {
+              const session = ctx.sync.session.get(id)
+              if (!session || !value) return []
+              return [[personalDirectorySessionKey(session.directory, id), value.type]]
+            }),
           ),
           questions: Object.fromEntries(
             [...directoryStores].flatMap(([directory, store]) =>
@@ -181,7 +180,11 @@ export default function PersonalLayout(props: ParentProps) {
                 .filter((session) => !session.parentID)
                 .map((session) => [
                   personalDirectorySessionKey(directory, session.id),
-                  sessionTreeRequests(directorySessions.get(directory) ?? [], store.question, session.id).length,
+                  sessionTreeRequests(
+                    directorySessions.get(directory) ?? [],
+                    ctx.sync.session.data.question,
+                    session.id,
+                  ).length,
                 ]),
             ),
           ),
@@ -193,7 +196,7 @@ export default function PersonalLayout(props: ParentProps) {
                   personalDirectorySessionKey(directory, session.id),
                   sessionTreeRequests(
                     directorySessions.get(directory) ?? [],
-                    store.permission,
+                    ctx.sync.session.data.permission,
                     session.id,
                     (item) => !permissionState.autoResponds(item, directory),
                   ).length,
