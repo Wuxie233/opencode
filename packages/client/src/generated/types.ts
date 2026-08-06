@@ -21,6 +21,26 @@ export type InvalidRequestError = {
 export const isInvalidRequestError = (value: unknown): value is InvalidRequestError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "InvalidRequestError"
 
+export type AttachmentStorageError = { readonly _tag: "AttachmentStorageError"; readonly message: string }
+export const isAttachmentStorageError = (value: unknown): value is AttachmentStorageError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "AttachmentStorageError"
+
+export type AttachmentNotFoundError = { readonly _tag: "AttachmentNotFoundError"; readonly message: string }
+export const isAttachmentNotFoundError = (value: unknown): value is AttachmentNotFoundError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "AttachmentNotFoundError"
+
+export type AttachmentConflictError = {
+  readonly _tag: "AttachmentConflictError"
+  readonly message: string
+  readonly offset: number
+}
+export const isAttachmentConflictError = (value: unknown): value is AttachmentConflictError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "AttachmentConflictError"
+
+export type AttachmentInvalidStateError = { readonly _tag: "AttachmentInvalidStateError"; readonly message: string }
+export const isAttachmentInvalidStateError = (value: unknown): value is AttachmentInvalidStateError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "AttachmentInvalidStateError"
+
 export type InvalidCursorError = { readonly _tag: "InvalidCursorError"; readonly message: string }
 export const isInvalidCursorError = (value: unknown): value is InvalidCursorError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "InvalidCursorError"
@@ -102,6 +122,45 @@ export const isProjectCopyError = (value: unknown): value is ProjectCopyError =>
   typeof value === "object" && value !== null && "name" in value && value["name"] === "ProjectCopyError"
 
 export type HealthGetOutput = { readonly healthy: true }
+
+export type AttachmentsInitInput = {
+  readonly name: { readonly name: string; readonly mime: string; readonly size?: number }["name"]
+  readonly mime: { readonly name: string; readonly mime: string; readonly size?: number }["mime"]
+  readonly size?: { readonly name: string; readonly mime: string; readonly size?: number }["size"]
+}
+
+export type AttachmentsInitOutput = {
+  readonly attachmentID: string
+  readonly filename: string
+  readonly mime: string
+  readonly size?: number
+  readonly offset: number
+  readonly state: "uploading" | "complete" | "cancelled"
+}
+
+export type AttachmentsStatusInput = { readonly attachmentID: { readonly attachmentID: string }["attachmentID"] }
+
+export type AttachmentsStatusOutput = {
+  readonly attachmentID: string
+  readonly filename: string
+  readonly mime: string
+  readonly size?: number
+  readonly offset: number
+  readonly state: "uploading" | "complete" | "cancelled"
+}
+
+export type AttachmentsCompleteInput = { readonly attachmentID: { readonly attachmentID: string }["attachmentID"] }
+
+export type AttachmentsCompleteOutput = {
+  readonly path: string
+  readonly filename: string
+  readonly mime: string
+  readonly size: number
+}
+
+export type AttachmentsCancelInput = { readonly attachmentID: { readonly attachmentID: string }["attachmentID"] }
+
+export type AttachmentsCancelOutput = void
 
 export type LocationGetInput = {
   readonly location?: {

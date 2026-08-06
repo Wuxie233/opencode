@@ -35,6 +35,7 @@ export const groupNames = {
   "server.question": "questions",
   "server.reference": "references",
   "server.projectCopy": "projectCopies",
+  "server.attachment": "attachments",
 } as const
 
 export const endpointNames = {
@@ -50,4 +51,4 @@ export const endpointNames = {
   "question.request.list": "listRequests",
 } as const
 
-export const omitEndpoints = new Set(["fs.read", "pty.connect", "pty.connectToken"])
+export const omitEndpoints = new Set(["fs.read", "pty.connect", "pty.connectToken", "attachment.chunk", "attachment.content"])

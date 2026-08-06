@@ -1,5 +1,13 @@
 import type {
   HealthGetOutput,
+  AttachmentsInitInput,
+  AttachmentsInitOutput,
+  AttachmentsStatusInput,
+  AttachmentsStatusOutput,
+  AttachmentsCompleteInput,
+  AttachmentsCompleteOutput,
+  AttachmentsCancelInput,
+  AttachmentsCancelOutput,
   LocationGetInput,
   LocationGetOutput,
   AgentsListInput,
@@ -251,6 +259,53 @@ export function make(options: ClientOptions) {
       get: (requestOptions?: RequestOptions) =>
         request<HealthGetOutput>(
           { method: "GET", path: `/api/health`, successStatus: 200, declaredStatuses: [401, 400], empty: false },
+          requestOptions,
+        ),
+    },
+    attachments: {
+      init: (input: AttachmentsInitInput, requestOptions?: RequestOptions) =>
+        request<AttachmentsInitOutput>(
+          {
+            method: "POST",
+            path: `/api/attachment`,
+            body: { name: input["name"], mime: input["mime"], size: input["size"] },
+            successStatus: 200,
+            declaredStatuses: [500, 401, 400],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      status: (input: AttachmentsStatusInput, requestOptions?: RequestOptions) =>
+        request<AttachmentsStatusOutput>(
+          {
+            method: "GET",
+            path: `/api/attachment/${encodeURIComponent(input.attachmentID)}`,
+            successStatus: 200,
+            declaredStatuses: [404, 401, 400],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      complete: (input: AttachmentsCompleteInput, requestOptions?: RequestOptions) =>
+        request<AttachmentsCompleteOutput>(
+          {
+            method: "POST",
+            path: `/api/attachment/${encodeURIComponent(input.attachmentID)}/complete`,
+            successStatus: 200,
+            declaredStatuses: [404, 409, 500, 401, 400],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      cancel: (input: AttachmentsCancelInput, requestOptions?: RequestOptions) =>
+        request<AttachmentsCancelOutput>(
+          {
+            method: "DELETE",
+            path: `/api/attachment/${encodeURIComponent(input.attachmentID)}`,
+            successStatus: 204,
+            declaredStatuses: [404, 409, 401, 400],
+            empty: true,
+          },
           requestOptions,
         ),
     },

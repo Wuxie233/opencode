@@ -102,6 +102,7 @@ import { sessionHandlers } from "./handlers/session"
 import { syncHandlers } from "./handlers/sync"
 import { tuiHandlers } from "./handlers/tui"
 import { handlers } from "@opencode-ai/server/handlers"
+import { Attachment } from "@opencode-ai/core/attachment"
 import { buildLocationServiceMap, LocationServiceMap } from "@opencode-ai/core/location-services"
 import { layer as locationLayer } from "@opencode-ai/server/location"
 import { sessionLocationLayer } from "@opencode-ai/server/middleware/session-location"
@@ -225,6 +226,7 @@ type RouteRequirements =
 
 const app = LayerNode.group([
   Npm.node,
+  Attachment.node,
   FSUtil.node,
   Database.node,
   Auth.node,
