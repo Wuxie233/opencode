@@ -336,6 +336,7 @@ describe("Config", () => {
                   },
                 },
                 compaction: {
+                  mode: "local",
                   auto: true,
                   prune: false,
                   keep: { tokens: 2000 },
@@ -422,6 +423,7 @@ describe("Config", () => {
               },
             })
             expect(documents[0]?.info.compaction).toEqual({
+              mode: "local",
               auto: true,
               prune: false,
               keep: { tokens: 2000 },

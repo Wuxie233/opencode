@@ -148,6 +148,9 @@ export const Info = Schema.Struct({
   }),
   compaction: Schema.optional(
     Schema.Struct({
+      mode: Schema.optional(Schema.Literals(["provider", "local"])).annotate({
+        description: "Use provider-native or local conversation compaction",
+      }),
       auto: Schema.optional(Schema.Boolean).annotate({
         description: "Enable automatic compaction when context is full (default: true)",
       }),

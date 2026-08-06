@@ -58,6 +58,39 @@ describe("OpenAI Responses route", () => {
     }),
   )
 
+  it.effect("replays a canonical compacted window before new messages", () =>
+    Effect.gen(function* () {
+      const canonical = [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Earlier" }] },
+        {
+          type: "function_call_output",
+          call_id: "call_image",
+          output: [{ type: "input_image", image_url: "data:image/png;base64,cGl4ZWw=" }],
+        },
+        { type: "compaction", id: "cmp_1", encrypted_content: "opaque", created_by: "provider" },
+        {
+          type: "compaction_summary",
+          encrypted_content: "opaque-latest",
+          opaque: { retained: true },
+        },
+      ]
+      const prepared = yield* LLMClient.prepare<OpenAIResponses.OpenAIResponsesBody>(
+        LLM.request({
+          model,
+          system: "Current instructions",
+          messages: [Message.user("Next")],
+          providerOptions: { openai: { canonicalInput: canonical } },
+        }),
+      )
+
+      expect(prepared.body.input).toEqual([
+        { role: "system", content: "Current instructions" },
+        ...canonical,
+        { role: "user", content: [{ type: "input_text", text: "Next" }] },
+      ])
+    }),
+  )
+
   it.effect("lowers semantic service tier options", () =>
     Effect.gen(function* () {
       const input = LLM.updateRequest(request, { providerOptions: { openai: { serviceTier: "priority" } } })

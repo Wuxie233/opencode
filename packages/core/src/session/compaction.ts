@@ -1,29 +1,35 @@
 export * as SessionCompaction from "./compaction"
 
 import { LLM, LLMError, LLMEvent, Message, type LLMRequest, type Model } from "@opencode-ai/llm"
-import { DateTime, Effect, Stream } from "effect"
+import { OpenAIResponsesCompact } from "@opencode-ai/llm/protocols/openai-responses-compact"
+import type { OpenAIResponsesBody } from "@opencode-ai/llm/protocols/openai-responses"
+import type { RequestExecutor } from "@opencode-ai/llm/route"
+import { DateTime, Duration, Effect, Stream } from "effect"
 import type { Config } from "../config"
+import type { Database } from "../database/database"
 import type { EventV2 } from "../event"
 import { SessionEvent } from "./event"
 import { SessionMessage } from "./message"
 import { SessionSchema } from "./schema"
 import { Token } from "../util/token"
+import { SessionCanonicalWindow } from "./canonical-window"
 
 const DEFAULT_BUFFER = 20_000
 const DEFAULT_KEEP_TOKENS = 8_000
 const TOOL_OUTPUT_MAX_CHARS = 2_000
 const SUMMARY_OUTPUT_TOKENS = 4_096
+const PROVIDER_COMPACTION_TIMEOUT = Duration.seconds(30)
 const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
-## Objective
-- [one or two brief sentences describing what the user is trying to accomplish]
+## User Requests
+- [top-level user asks and important clarifications, preserving wording as closely as possible, or "(none visible)"]
 
-## Important Details
-- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or "(none)"]
+## Goal
+- [one brief sentence describing what should be done next]
 
 ## Work State
 ### Completed
-- [finished work, verified facts, or changes made; otherwise "(none)"]
+- [finished work, verified facts, changes made, and test/build results; otherwise "(none)"]
 
 ### Active
 - [current work, partial changes, or investigation state; otherwise "(none)"]
@@ -31,18 +37,33 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 ### Blocked
 - [blockers, failing commands, or unknowns; otherwise "(none)"]
 
+## Pending Tasks
+- [remaining concrete tasks or next logical actions; otherwise "(none)"]
+
+## Key Files
+- [workspace-relative file or directory path: why it matters, or "(none)"]
+
+## Important Decisions
+- [technical decisions, constraints, preferences, trade-offs, and why; otherwise "(none)"]
+
+## Explicit Constraints
+- [verbatim user or project constraints that remain relevant; otherwise "(none)"]
+
 ## Next Move
 1. [immediate concrete action, or "(none)"]
 2. [next action if known, or "(none)"]
 
-## Relevant Files
-- [file or directory path: why it matters, or "(none)"]
+## Continuation Context
+- [warnings, gotchas, exact context needed to continue, relevant commands, errors, URLs, or identifiers; otherwise "(none)"]
 </template>
 
 Rules:
 - Keep every section, even when empty.
-- Use terse bullets, not prose paragraphs.
-- Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
+- Use terse bullets, not prose paragraphs, except the single-sentence Goal.
+- Preserve exact file paths, symbols, commands, error strings, URLs, identifiers, decisions, verification results, and user constraints when known.
+- Use workspace-relative paths for files when possible.
+- Do not include secrets, API keys, tokens, cookies, or credentials.
+- Do not claim tests or builds passed unless the history shows that they did.
 - Do not mention the summary process or that context was compacted.`
 
 type Entry = {
@@ -51,6 +72,7 @@ type Entry = {
 }
 
 type Settings = {
+  readonly mode: "provider" | "local"
   readonly auto: boolean
   readonly buffer: number
   readonly tokens: number
@@ -59,8 +81,11 @@ type Settings = {
 type Dependencies = {
   readonly events: EventV2.Interface
   readonly llm: {
+    readonly prepare: <Body = unknown>(request: LLMRequest) => Effect.Effect<{ readonly body: Body }, LLMError>
     readonly stream: (request: LLMRequest) => Stream.Stream<LLMEvent, LLMError>
   }
+  readonly executor: RequestExecutor.Interface
+  readonly db: Database.Interface["db"]
   readonly config: readonly Config.Entry[]
 }
 
@@ -69,6 +94,8 @@ type Input = {
   readonly entries: readonly Entry[]
   readonly model: Model
   readonly request: LLMRequest
+  readonly variant?: string
+  readonly canonicalSourceSeq?: number
 }
 
 const estimate = (value: unknown) => Token.estimate(JSON.stringify(value))
@@ -117,11 +144,12 @@ const settings = (documents: readonly Config.Entry[]) => {
     .flatMap((entry) => (entry.info.compaction ? [entry.info.compaction] : []))
   return configured.reduce<Settings>(
     (result, current) => ({
+      mode: current.mode ?? result.mode,
       auto: current.auto ?? result.auto,
       buffer: current.buffer ?? result.buffer,
       tokens: current.keep?.tokens ?? result.tokens,
     }),
-    { auto: true, buffer: DEFAULT_BUFFER, tokens: DEFAULT_KEEP_TOKENS },
+    { mode: "provider", auto: true, buffer: DEFAULT_BUFFER, tokens: DEFAULT_KEEP_TOKENS },
   )
 }
 
@@ -169,7 +197,37 @@ export const buildPrompt = (input: { readonly previousSummary?: string; readonly
 
 export const make = (dependencies: Dependencies) => {
   const config = settings(dependencies.config)
-  const compactAfterOverflow = Effect.fn("SessionCompaction.compactAfterOverflow")(function* (input: Input) {
+  const providerCompact = Effect.fn("SessionCompaction.providerCompact")(function* (input: Input) {
+    if (config.mode === "local" || !OpenAIResponsesCompact.supported(input.model)) return false
+    const sourceSeq = input.entries.at(-1)?.seq
+    if (sourceSeq === undefined) return false
+    if (input.canonicalSourceSeq !== undefined && sourceSeq <= input.canonicalSourceSeq) return false
+    return yield* Effect.gen(function* () {
+      const prepared = yield* dependencies.llm.prepare<OpenAIResponsesBody>(input.request)
+      const compacted = yield* OpenAIResponsesCompact.compact({
+        request: input.request,
+        body: {
+          model: prepared.body.model,
+          input: prepared.body.input,
+          instructions: prepared.body.instructions,
+          prompt_cache_key: prepared.body.prompt_cache_key,
+          service_tier: prepared.body.service_tier,
+        },
+        executor: dependencies.executor,
+      })
+      yield* SessionCanonicalWindow.replace(dependencies.db, {
+        sessionID: input.sessionID,
+        providerID: input.model.provider,
+        modelID: input.model.id,
+        routeID: input.model.route.id,
+        variant: input.variant,
+        sourceSeq,
+        items: compacted.output,
+      })
+      return true
+    }).pipe(Effect.timeout(PROVIDER_COMPACTION_TIMEOUT), Effect.catch(() => Effect.succeed(false)))
+  })
+  const localCompact = Effect.fn("SessionCompaction.localCompact")(function* (input: Input) {
     const context = input.model.route.defaults.limits?.context
     if (context === undefined || context <= 0) return false
     const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
@@ -220,7 +278,15 @@ export const make = (dependencies: Dependencies) => {
       text: summary,
       recent: selected.recent,
     })
+    yield* SessionCanonicalWindow.clear(dependencies.db, input.sessionID).pipe(Effect.catch(() => Effect.void))
     return true
+  })
+  const compact = Effect.fn("SessionCompaction.compact")(function* (input: Input) {
+    if (yield* providerCompact(input)) return true
+    return yield* localCompact(input)
+  })
+  const compactAfterOverflow = Effect.fn("SessionCompaction.compactAfterOverflow")(function* (input: Input) {
+    return yield* compact(input)
   })
   const compactIfNeeded = Effect.fn("SessionCompaction.compactIfNeeded")(function* (input: Input) {
     if (!config.auto) return false
@@ -228,13 +294,19 @@ export const make = (dependencies: Dependencies) => {
     if (context === undefined || context <= 0) return false
     const output = input.request.generation?.maxTokens ?? input.model.route.defaults.limits?.output ?? 0
     if (
-      estimate({ system: input.request.system, messages: input.request.messages, tools: input.request.tools }) <=
+      estimate({
+        system: input.request.system,
+        messages: input.request.messages,
+        tools: input.request.tools,
+        canonical: input.request.providerOptions?.openai?.canonicalInput,
+      }) <=
       context - Math.max(output, config.buffer)
     )
       return false
-    return yield* compactAfterOverflow(input)
+    return yield* compact(input)
   })
   return {
+    compact,
     compactIfNeeded,
     compactAfterOverflow,
   }

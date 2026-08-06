@@ -1114,7 +1114,13 @@ const layer = Layer.effect(
             Effect.provideService(Database.Service, database),
           )
 
-          const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
+          const {
+            user: lastUser,
+            assistant: lastAssistant,
+            finished: lastFinished,
+            overflow: lastOverflow,
+            tasks,
+          } = MessageV2.latest(msgs)
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
@@ -1179,9 +1185,9 @@ const layer = Layer.effect(
           }
 
           if (
-            lastFinished &&
-            lastFinished.summary !== true &&
-            (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
+            lastOverflow &&
+            lastOverflow.summary !== true &&
+            (yield* compaction.isOverflow({ tokens: lastOverflow.tokens, model }))
           ) {
             yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
             continue
@@ -1204,6 +1210,13 @@ const layer = Layer.effect(
           }
           const maxSteps = agent.steps ?? Infinity
           const isLastStep = step >= maxSteps
+          const canonical = yield* compaction.canonical({
+            sessionID,
+            messages: msgs,
+            model,
+            variant: lastUser.model.variant,
+          })
+          msgs = canonical.messages
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
             Effect.provideService(FSUtil.Service, fsys),
@@ -1309,6 +1322,7 @@ const layer = Layer.effect(
               ],
               tools,
               model,
+              canonicalInput: canonical.input,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
 

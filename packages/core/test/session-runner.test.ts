@@ -10,6 +10,7 @@ import {
   type LLMRequest,
 } from "@opencode-ai/llm"
 import * as OpenAIChat from "@opencode-ai/llm/protocols/openai-chat"
+import * as OpenAIResponses from "@opencode-ai/llm/protocols/openai-responses"
 import { Database } from "@opencode-ai/core/database/database"
 import { makeLocationNode } from "@opencode-ai/core/effect/app-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -26,6 +27,7 @@ import { SessionV2 } from "@opencode-ai/core/session"
 import { Snapshot } from "@opencode-ai/core/snapshot"
 import { ContextSnapshotDecodeError } from "@opencode-ai/core/session/error"
 import { SessionEvent } from "@opencode-ai/core/session/event"
+import { SessionCanonicalWindow } from "@opencode-ai/core/session/canonical-window"
 import { SessionInput } from "@opencode-ai/core/session/input"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
@@ -108,6 +110,9 @@ const recoveryModel = Model.make({
   provider: "fake",
   route: OpenAIChat.route.with({ limits: { context: 20_000, output: 1_000 } }),
 })
+const nativeCompactModel = OpenAIResponses.route
+  .with({ provider: "wuxie-openai", endpoint: { baseURL: "https://api.openai.test/v1" }, limits: { context: 100_000 } })
+  .model({ id: "gpt-5.6-sol" })
 const authorizations: Tool.Context[] = []
 const executions: string[] = []
 const permission = Layer.succeed(
@@ -1082,6 +1087,47 @@ describe("SessionRunnerLLM", () => {
     }),
   )
 
+  it.effect("continues from a persisted provider window with only newer transcript messages", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const session = yield* SessionV2.Service
+      const { db } = yield* Database.Service
+      currentModel = nativeCompactModel
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Already compacted" }), resume: false })
+      response = fragmentFixture("text", "text-before-compact", ["Earlier answer"]).completeEvents
+      yield* session.resume(sessionID)
+      const source = (yield* db
+        .select({ seq: SessionMessageTable.seq })
+        .from(SessionMessageTable)
+        .where(eq(SessionMessageTable.session_id, sessionID))
+        .orderBy(asc(SessionMessageTable.seq))
+        .all()).at(-1)
+      expect(source).toBeDefined()
+      const canonical = [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "Earlier canonical" }] },
+        { type: "compaction_summary", encrypted_content: "opaque-window", opaque: { retained: true } },
+      ]
+      yield* SessionCanonicalWindow.replace(db, {
+        sessionID,
+        providerID: "wuxie-openai",
+        modelID: "gpt-5.6-sol",
+        routeID: "openai-responses",
+        sourceSeq: source!.seq,
+        items: canonical,
+      })
+
+      requests.length = 0
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "New input" }), resume: false })
+      response = fragmentFixture("text", "text-after-compact", ["Continued"]).completeEvents
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(1)
+      expect(requests[0]?.providerOptions?.openai?.canonicalInput).toEqual(canonical)
+      expect(requests[0]?.messages.map((message) => message.role)).toEqual(["user"])
+      expect(userTexts(requests[0]!)).toEqual(["New input"])
+    }),
+  )
+
   it.effect("automatically compacts into a completed summary and retained recent turn", () =>
     Effect.gen(function* () {
       yield* setup
@@ -1108,7 +1154,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(2)
-      expect(userTexts(requests[0])[0]).toContain("## Objective")
+      expect(userTexts(requests[0])[0]).toContain("## User Requests")
       expect(userTexts(requests[1])).toHaveLength(1)
       expect(userTexts(requests[1])[0]).toContain("<summary>\n## Objective\n- Preserve the task\n</summary>")
       expect(userTexts(requests[1])[0]).toContain(`[User]: ${"Recent exact request ".repeat(180)}`)
@@ -1160,7 +1206,7 @@ describe("SessionRunnerLLM", () => {
       yield* session.resume(sessionID)
 
       expect(requests).toHaveLength(3)
-      expect(userTexts(requests[1])[0]).toContain("## Objective")
+      expect(userTexts(requests[1])[0]).toContain("## User Requests")
       expect(userTexts(requests[2])[0]).toContain("<summary>\n## Objective\n- Recover overflow\n</summary>")
       expect(yield* session.context(sessionID)).toMatchObject([
         { type: "compaction", summary: "## Objective\n- Recover overflow" },

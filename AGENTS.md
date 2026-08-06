@@ -164,6 +164,12 @@ const table = sqliteTable("session", {
 - Keep replay safety in `SessionProcessor`: an HTTP 200 stream error may retry only before non-empty text or reasoning, tool activity, or a patch is visible. Do not broaden provider error matching into generic message substring checks.
 - After visible output or tool/patch activity, an exact `stream_read_error` must preserve the failed assistant turn and its structured error, then let legacy `SessionPrompt` continue in a new synthetic user turn. Never use this continuation path for generic stream errors, aborts, context overflow, or content filtering, and never replay the failed provider turn or completed tool calls.
 
+## Provider-Native Compaction
+
+- OpenAI Responses compaction stores an opaque canonical window keyed by Session, provider, model, route, and variant. Replay the current system context before canonical items, then retained tail messages and messages created after the compaction marker.
+- `compaction.mode: local` disables provider-native compaction. Unsupported, invalid, or timed-out provider compaction falls back to the visible local summary path without replacing a newer canonical window.
+- Keep provider compaction markers durable and excluded from pending compaction tasks. Preserve `tail_start_id` and `provider_source_seq`; model/agent changes and revert clear incompatible canonical state.
+
 ## Routed Skills
 
 - Skill frontmatter may declare `routers` as parent skill names and `exposure` as `root`, `routed`, or `explicit`. Omitted exposure defaults to `routed` when routers are present and `root` otherwise.

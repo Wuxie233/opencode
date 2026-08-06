@@ -2,6 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
+import { SessionCanonicalWindow } from "@opencode-ai/core/session/canonical-window"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { APICallError } from "ai"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
@@ -29,10 +30,13 @@ import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { TestConfig } from "../fixture/config"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LLMEvent, Usage } from "@opencode-ai/llm"
+import { RequestExecutor } from "@opencode-ai/llm/route"
+import { HttpClientResponse } from "effect/unstable/http"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { requestExecutor as requestExecutorNode } from "@opencode-ai/core/effect/app-node-platform"
 
 const summary = Layer.succeed(
   SessionSummary.Service,
@@ -88,7 +92,11 @@ function createModel(opts: {
 
 const wide = () => ProviderTest.fake({ model: createModel({ context: 100_000, output: 32_000 }) })
 
-function createUserMessage(sessionID: SessionID, text: string) {
+function createUserMessage(
+  sessionID: SessionID,
+  text: string,
+  model: { providerID: ProviderV2.ID; modelID: ModelV2.ID } = ref,
+) {
   return Effect.gen(function* () {
     const ssn = yield* SessionNs.Service
     const msg = yield* ssn.updateMessage({
@@ -96,7 +104,7 @@ function createUserMessage(sessionID: SessionID, text: string) {
       role: "user",
       sessionID,
       agent: "build",
-      model: ref,
+      model,
       time: { created: Date.now() },
     })
     yield* ssn.updatePart({
@@ -171,13 +179,16 @@ function createSummaryAssistantMessage(sessionID: SessionID, parentID: MessageID
   )
 }
 
-function createCompactionMarker(sessionID: SessionID) {
+function createCompactionMarker(
+  sessionID: SessionID,
+  model: { providerID: ProviderV2.ID; modelID: ModelV2.ID } = ref,
+) {
   return SessionNs.Service.use((ssn) =>
     Effect.gen(function* () {
       const msg = yield* ssn.updateMessage({
         id: MessageID.ascending(),
         role: "user",
-        model: ref,
+        model,
         sessionID,
         agent: "build",
         time: { created: Date.now() },
@@ -251,6 +262,7 @@ type CompactionProcessOptions = {
   plugin?: Layer.Layer<Plugin.Service>
   provider?: ReturnType<typeof wide>
   config?: Layer.Layer<Config.Service>
+  executor?: Layer.Layer<RequestExecutor.Service>
 }
 
 function withCompaction(options?: CompactionProcessOptions) {
@@ -262,6 +274,7 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     [Provider.node, (options?.provider ?? wide()).layer],
     [RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })],
     [SessionSummary.node, summary],
+    ...(options?.executor ? ([[requestExecutorNode, options.executor]] as const) : []),
   ]
   if (!options?.llm) {
     return AppNodeBuilder.build(compactionTestNode, [
@@ -799,6 +812,250 @@ describe("session.compaction.prune", () => {
 })
 
 describe("session.compaction.process", () => {
+  const nativeRef = {
+    providerID: ProviderV2.ID.make("wuxie-openai"),
+    modelID: ModelV2.ID.make("gpt-5.6-sol"),
+  }
+  const nativeModel = ProviderTest.model({
+    id: nativeRef.modelID,
+    providerID: nativeRef.providerID,
+    api: { id: "gpt-5.6-sol", url: "https://api.openai.test/v1", npm: "@ai-sdk/openai" },
+  })
+  const nativeProvider = ProviderTest.fake({
+    model: nativeModel,
+    info: ProviderTest.info(
+      {
+        id: nativeRef.providerID,
+        options: { apiKey: "test-key", baseURL: "https://api.openai.test/v1" },
+      },
+      nativeModel,
+    ),
+    getModel: () => Effect.succeed(nativeModel),
+    getProvider: () =>
+      Effect.succeed(
+        ProviderTest.info(
+          {
+            id: nativeRef.providerID,
+            options: { apiKey: "test-key", baseURL: "https://api.openai.test/v1" },
+          },
+          nativeModel,
+        ),
+      ),
+  })
+  const compactResponse = (request: Parameters<RequestExecutor.Interface["execute"]>[0], output: unknown[]) =>
+    HttpClientResponse.fromWeb(
+      request,
+      new Response(JSON.stringify({ id: "cmp_test", object: "response.compaction", output }), {
+        headers: { "content-type": "application/json" },
+      }),
+    )
+
+  itCompaction.instance(
+    "persists and replays provider-native compaction for the legacy session path",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({ model: { id: nativeRef.modelID, providerID: nativeRef.providerID } })
+      yield* createUserMessage(session.id, "earlier context", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      const marker = msgs.at(-1)!
+      const output = [{ type: "compaction", encrypted_content: "opaque" }]
+
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: marker.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("stop")
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const part = saved.at(-1)?.parts.find((item) => item.type === "compaction")
+      expect(part?.type === "compaction" && part.provider).toBe(true)
+      expect(part?.type === "compaction" && part.provider_source_seq).toBeGreaterThanOrEqual(0)
+      const replay = yield* SessionCompaction.use.canonical({
+        sessionID: session.id,
+        messages: saved,
+        model: nativeModel,
+      })
+      expect(replay.input).toEqual(output)
+      expect(replay.messages).toEqual([])
+      expect(
+        yield* SessionCanonicalWindow.load((yield* Database.Service).db, {
+          sessionID: session.id,
+          providerID: nativeRef.providerID,
+          modelID: nativeRef.modelID,
+          routeID: "openai-responses",
+        }),
+      ).toBeDefined()
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider,
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: (request) => Effect.succeed(compactResponse(request, [{ type: "compaction", encrypted_content: "opaque" }])),
+        }),
+      }),
+    ),
+  )
+
+  itCompaction.instance(
+    "preserves provider-native marker when persisting the retained tail",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({ model: { id: nativeRef.modelID, providerID: nativeRef.providerID } })
+      yield* createUserMessage(session.id, "first", nativeRef)
+      const keep = yield* createUserMessage(session.id, "second", nativeRef)
+      yield* createUserMessage(session.id, "third", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("stop")
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const part = saved.at(-1)?.parts.find((item) => item.type === "compaction")
+      expect(part).toMatchObject({
+        type: "compaction",
+        provider: true,
+        tail_start_id: keep.id,
+      })
+      expect(part?.type === "compaction" && part.provider_source_seq).toBeGreaterThanOrEqual(0)
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider,
+        config: cfg({ tail_turns: 2, preserve_recent_tokens: 10_000 }),
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: (request) => Effect.succeed(compactResponse(request, [{ type: "compaction", encrypted_content: "opaque" }])),
+        }),
+      }),
+    ),
+  )
+
+  itCompaction.instance(
+    "replays retained tail after provider-native compaction",
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({ model: { id: nativeRef.modelID, providerID: nativeRef.providerID } })
+      yield* createUserMessage(session.id, "older", nativeRef)
+      const recent = yield* createUserMessage(session.id, "recent turn", nativeRef)
+      const large = yield* createAssistantMessage(session.id, recent.id, test.directory)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: large.id,
+        sessionID: session.id,
+        type: "text",
+        text: "z".repeat(2_000),
+      })
+      const keep = yield* createAssistantMessage(session.id, recent.id, test.directory)
+      yield* ssn.updatePart({
+        id: PartID.ascending(),
+        messageID: keep.id,
+        sessionID: session.id,
+        type: "text",
+        text: "keep tail",
+      })
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      const output = [{ type: "compaction", encrypted_content: "opaque" }]
+
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: true,
+        }),
+      ).toBe("continue")
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      const marker = saved.find((message) => message.parts.some((part) => part.type === "compaction" && part.provider))
+      const part = marker?.parts.find((item) => item.type === "compaction")
+      expect(part).toMatchObject({
+        type: "compaction",
+        provider: true,
+        tail_start_id: keep.id,
+      })
+      const filtered = MessageV2.filterCompacted(yield* MessageV2.stream(session.id))
+      const replay = yield* SessionCompaction.use.canonical({
+        sessionID: session.id,
+        messages: filtered,
+        model: nativeModel,
+      })
+      expect(replay.input).toEqual(output)
+      expect(replay.messages.map((message) => message.info.id)).toEqual([keep.id, saved.at(-1)!.info.id])
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider,
+        config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }),
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: (request) => Effect.succeed(compactResponse(request, [{ type: "compaction", encrypted_content: "opaque" }])),
+        }),
+      }),
+    ),
+  )
+
+  itCompaction.instance(
+    "uses local compaction without calling the provider endpoint when mode is local",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "earlier context", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("continue")
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider,
+        config: cfg({ mode: "local" }),
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: () => Effect.die("provider endpoint must not be called"),
+        }),
+      }),
+    ),
+  )
+
+  itCompaction.instance(
+    "falls back to the visible legacy summary when provider compaction is invalid",
+    Effect.gen(function* () {
+      const ssn = yield* SessionNs.Service
+      const session = yield* ssn.create({})
+      yield* createUserMessage(session.id, "earlier context", nativeRef)
+      yield* createCompactionMarker(session.id, nativeRef)
+      const msgs = yield* ssn.messages({ sessionID: session.id })
+
+      expect(
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        }),
+      ).toBe("continue")
+      const saved = yield* ssn.messages({ sessionID: session.id })
+      expect(saved.some((message) => message.info.role === "assistant" && message.info.summary)).toBe(true)
+      const part = saved.find((message) => message.info.id === msgs.at(-1)!.info.id)?.parts.find((item) => item.type === "compaction")
+      expect(part?.type === "compaction" && part.provider).toBeFalsy()
+    }).pipe(
+      withCompaction({
+        provider: nativeProvider,
+        executor: Layer.succeed(RequestExecutor.Service, {
+          execute: (request) => Effect.succeed(compactResponse(request, [{ type: "message" }])),
+        }),
+      }),
+    ),
+  )
   it.instance(
     "throws when parent is not a user message",
     Effect.gen(function* () {
@@ -1431,7 +1688,7 @@ describe("session.compaction.process", () => {
         expect(captured).toContain("<previous-summary>")
         expect(captured).toContain("summary one")
         expect(captured.match(/summary one/g)?.length).toBe(1)
-        expect(captured).toContain("## Important Details")
+        expect(captured).toContain("## Important Decisions")
         expect(captured).toContain("## Work State")
       }).pipe(withCompaction({ llm: stub.llmLayer }))
     },

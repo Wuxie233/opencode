@@ -75,6 +75,7 @@ const config = Layer.succeed(Config.Service, Config.Service.of({ entries: () => 
 const runnerLayer = AppNodeBuilder.build(SessionRunnerLLM.node, [
   [Snapshot.node, Snapshot.noopLayer],
   [LayerNodePlatform.llmClient, client],
+  [LayerNodePlatform.requestExecutor, executor],
   [SessionRunnerModel.node, models],
   [SystemContextRegistry.node, systemContext],
   [Location.node, Location.boundNode({ directory: AbsolutePath.make("/project") })],
@@ -119,6 +120,7 @@ const it = testEffect(
     ]),
     [
       [LayerNodePlatform.llmClient, client],
+      [LayerNodePlatform.requestExecutor, executor],
       [PermissionV2.node, permission],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],
       [SessionRunnerModel.node, models],
