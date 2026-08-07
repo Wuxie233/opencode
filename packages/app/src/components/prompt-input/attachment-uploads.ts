@@ -19,6 +19,7 @@ export function createAttachmentUploads(input: {
     length: number,
   ) => Promise<ArrayBuffer>
   releaseSource?: (source: NonNullable<ImageAttachmentPart["blob"]["source"]>) => Promise<void>
+  getBlob?: (id: string) => Promise<Blob | null>
   onError?: (error: unknown) => void
 }) {
   const active = new Map<string, AbortController>()
@@ -42,7 +43,9 @@ export function createAttachmentUploads(input: {
     try {
       const blob = attachment.blob.source
         ? undefined
-        : await fetch(attachment.blob.url, { signal: controller.signal }).then((response) => response.blob())
+        : await Promise.resolve(input.getBlob?.(attachment.blob.id)).then(
+            (value) => value ?? fetch(attachment.blob.url, { signal: controller.signal }).then((response) => response.blob()),
+          )
       const result = await uploadPromptAttachment(
         input.server(),
         {

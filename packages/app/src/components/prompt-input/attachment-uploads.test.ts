@@ -73,6 +73,61 @@ describe("createAttachmentUploads", () => {
     )
   })
 
+  test("uploads from the persisted Blob when its preview URL is unavailable", async () => {
+    const uploaded: number[] = []
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        if (request.url.startsWith("blob:")) throw new TypeError("failed to fetch")
+        if (request.method === "POST" && request.url.endsWith("/api/attachment"))
+          return Response.json({ attachmentID: "att_persisted", offset: 0, state: "uploading" })
+        if (request.method === "PATCH") {
+          uploaded.push((await request.arrayBuffer()).byteLength)
+          return Response.json({ offset: 2 })
+        }
+        return Response.json({
+          path: "/private/persisted.bin",
+          filename: "persisted.bin",
+          mime: "application/octet-stream",
+          size: 2,
+        })
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+    const [store, setStore] = createStore<PromptStore>({
+      prompt: [
+        {
+          type: "image",
+          id: "persisted_1",
+          filename: "persisted.bin",
+          mime: "application/octet-stream",
+          blob: { id: "blob_persisted", url: "blob:expired" },
+          upload: { status: "pending", progress: 0 },
+        },
+      ],
+      context: { items: [] },
+    })
+    await new Promise<void>((resolve) =>
+      createRoot((dispose) => {
+        const uploads = createAttachmentUploads({
+          prompt: () => ({ current: () => store.prompt, cursor: () => 0, set: (prompt) => setStore("prompt", prompt) }),
+          server: () => server,
+          getBlob: async (id) => (id === "blob_persisted" ? new Blob([Uint8Array.of(1, 2)]) : null),
+        })
+        const attachment = store.prompt[0]
+        if (attachment?.type === "image") uploads.retry(attachment)
+        void wait()
+          .then(wait)
+          .then(() => {
+            expect(uploaded).toEqual([2])
+            expect(store.prompt[0]?.type === "image" ? store.prompt[0].upload?.status : undefined).toBe("complete")
+            dispose()
+            resolve()
+          })
+      }),
+    )
+  })
+
   test("releases a native source only after upload completion", async () => {
     globalThis.fetch = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {

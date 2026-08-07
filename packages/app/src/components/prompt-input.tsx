@@ -264,6 +264,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     server: serverSDK,
     readSource: platform.readAttachmentSource,
     releaseSource: platform.releaseAttachmentSource,
+    getBlob: platform.draftStore?.getBlob,
     onError: (error) =>
       showToast({
         variant: "error",

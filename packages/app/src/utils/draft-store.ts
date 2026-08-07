@@ -18,7 +18,10 @@ type Driver = {
   getBlob(id: string): Promise<Blob | null>
 }
 
-export type DraftStore = AsyncStorage & { putBlob(blob: Blob): Promise<BlobReference> }
+export type DraftStore = AsyncStorage & {
+  putBlob(blob: Blob): Promise<BlobReference>
+  getBlob(id: string): Promise<Blob | null>
+}
 const urls = new Map<string, string>()
 
 function blobUrl(id: string, blob: Blob) {
@@ -101,6 +104,7 @@ export function createDraftStore(driver: Driver): DraftStore {
       await driver.remove(key)
     },
     putBlob,
+    getBlob: (id: string) => driver.getBlob(id),
   }
 }
 

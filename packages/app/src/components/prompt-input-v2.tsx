@@ -124,6 +124,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
     server: serverSDK,
     readSource: platform.readAttachmentSource,
     releaseSource: platform.releaseAttachmentSource,
+    getBlob: platform.draftStore?.getBlob,
     onError: (error) =>
       showToast({
         variant: "error",
