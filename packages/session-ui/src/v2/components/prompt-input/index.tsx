@@ -10,6 +10,7 @@ import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { KeybindV2 } from "@opencode-ai/ui/v2/keybind-v2"
 import { MenuV2 } from "@opencode-ai/ui/v2/menu-v2"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
+import { ProgressCircleV2 } from "@opencode-ai/ui/v2/progress-circle-v2"
 import { AttachmentCardV2 } from "../attachment-card-v2"
 import { CommentCardV2 } from "../comment-card-v2"
 import { typeLabel } from "../../../components/message-file"
@@ -444,14 +445,33 @@ export function PromptInputV2Attachments(props: {
                       <img
                         src={attachment.blob.url}
                         alt={attachment.filename}
-                        class="w-[58px] h-[46px] rounded-[6px] object-cover transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.02] motion-reduce:transition-none motion-reduce:transform-none"
+                        class={`w-[58px] h-[46px] rounded-[6px] object-cover transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.02] motion-reduce:transition-none motion-reduce:transform-none ${
+                          uploading ? "prompt-attachment-uploading-image" : ""
+                        }`}
                         onClick={() => props.onAttachmentClick?.(attachment)}
                       />
                       <div class="absolute inset-0 rounded-[6px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-base)] pointer-events-none" />
                     </Show>
                   </TooltipV2>
                   <Show when={attachment.upload?.status === "uploading"}>
-                    <div class="absolute inset-x-1 bottom-1 z-10 h-1 overflow-hidden rounded-full bg-black/30">
+                    <div
+                      class="prompt-attachment-progress-overlay absolute inset-0 z-10 flex items-center justify-center rounded-[6px]"
+                      role="progressbar"
+                      aria-label={`Uploading ${attachment.filename}`}
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow={Math.round((attachment.upload?.progress ?? 0) * 100)}
+                    >
+                      <ProgressCircleV2
+                        percentage={(attachment.upload?.progress ?? 0) * 100}
+                        size={24}
+                        class="prompt-attachment-progress-circle-v2"
+                      />
+                      <span class="prompt-attachment-progress-label">
+                        {Math.round((attachment.upload?.progress ?? 0) * 100)}%
+                      </span>
+                    </div>
+                    <div class="absolute inset-x-1 bottom-1 z-20 h-1 overflow-hidden rounded-full bg-black/30">
                       <div
                         class="prompt-attachment-progress h-full origin-left bg-white"
                         style={{ transform: `scaleX(${attachment.upload?.progress ?? 0})` }}

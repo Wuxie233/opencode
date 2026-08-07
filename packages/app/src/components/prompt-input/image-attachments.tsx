@@ -3,6 +3,8 @@ import { Icon } from "@opencode-ai/ui/icon"
 import { Icon as IconV2 } from "@opencode-ai/ui/v2/icon"
 import { Tooltip } from "@opencode-ai/ui/tooltip"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
+import { ProgressCircle } from "@opencode-ai/ui/progress-circle"
+import { ProgressCircleV2 } from "@opencode-ai/ui/v2/progress-circle-v2"
 import { AttachmentCardV2 } from "@opencode-ai/session-ui/v2/attachment-card-v2"
 import { CommentCardV2 } from "@opencode-ai/session-ui/v2/comment-card-v2"
 import { typeLabel } from "@opencode-ai/session-ui/message-file"
@@ -40,6 +42,7 @@ const removeClass =
 const removeClassV2 =
   "absolute -top-1 -right-1 z-20 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-105 motion-reduce:transition-none motion-reduce:transform-none"
 const nameClass = "absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/50 rounded-b-md"
+const uploadingImageClass = "prompt-attachment-uploading-image"
 
 export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (props) => {
   return (
@@ -107,7 +110,9 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                   <img
                     src={attachment.blob.url}
                     alt={attachment.filename}
-                    class={props.newLayoutDesigns ? imageClassV2 : imageClass}
+                    class={`${props.newLayoutDesigns ? imageClassV2 : imageClass} ${
+                      attachment.upload?.status === "uploading" ? uploadingImageClass : ""
+                    }`}
                     onClick={() => props.onOpen(attachment)}
                   />
                 </Show>
@@ -161,7 +166,35 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
               )
               const progress = () => (
                 <Show when={attachment.upload?.status === "uploading"}>
-                  <div class="absolute inset-x-1 bottom-1 z-10 h-1 overflow-hidden rounded-full bg-black/30">
+                  <div
+                    class="prompt-attachment-progress-overlay absolute inset-0 z-10 flex items-center justify-center rounded-[inherit]"
+                    role="progressbar"
+                    aria-label={`Uploading ${attachment.filename}`}
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    aria-valuenow={Math.round((attachment.upload?.progress ?? 0) * 100)}
+                  >
+                    <Show
+                      when={props.newLayoutDesigns}
+                      fallback={
+                        <ProgressCircle
+                          percentage={(attachment.upload?.progress ?? 0) * 100}
+                          size={28}
+                          class="prompt-attachment-progress-circle text-white"
+                        />
+                      }
+                    >
+                      <ProgressCircleV2
+                        percentage={(attachment.upload?.progress ?? 0) * 100}
+                        size={24}
+                        class="prompt-attachment-progress-circle-v2"
+                      />
+                    </Show>
+                    <span class="prompt-attachment-progress-label">
+                      {Math.round((attachment.upload?.progress ?? 0) * 100)}%
+                    </span>
+                  </div>
+                  <div class="absolute inset-x-1 bottom-1 z-20 h-1 overflow-hidden rounded-full bg-black/30">
                     <div
                       class="prompt-attachment-progress h-full origin-left bg-white"
                       style={{ transform: `scaleX(${attachment.upload?.progress ?? 0})` }}

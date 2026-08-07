@@ -27,7 +27,7 @@ async function seedOrphanDraftBlob(page: Page) {
   })
 }
 
-async function setup(page: Page, input?: { seedOrphanBlob?: boolean }) {
+async function setup(page: Page, input?: { seedOrphanBlob?: boolean; patchGate?: Promise<void> }) {
   let patchAttempts = 0
   const errors: Error[] = []
   page.on("pageerror", (error) => errors.push(error))
@@ -65,6 +65,7 @@ async function setup(page: Page, input?: { seedOrphanBlob?: boolean }) {
         body: JSON.stringify({ attachmentID: "att_browser", offset: 0, state: "uploading" }),
       })
     if (request.method() === "PATCH") {
+      if (input?.patchGate) await input.patchGate
       if (patchAttempts++ === 0) return route.abort("failed")
       return route.fulfill({
         status: 200,
@@ -148,6 +149,32 @@ test("keeps image previews working after upload", async ({ page }) => {
   })
 
   await expect(composer.getByRole("img", { name: "pixel.png" })).toBeVisible()
+  await expect(composer.getByRole("button", { name: "Download attachment" })).toBeAttached()
+  expect(result.errors).toEqual([])
+})
+
+test("shows circular upload progress over a muted image", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  let releasePatch: (() => void) | undefined
+  const patchGate = new Promise<void>((resolve) => {
+    releasePatch = resolve
+  })
+  const result = await setup(page, { patchGate })
+  const composer = page.locator('[data-component="prompt-input-v2"]')
+  await expectAppVisible(composer)
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "slow.png",
+    mimeType: "image/png",
+    buffer: Buffer.from([1, 2, 3, 4]),
+  })
+
+  const progress = composer.getByRole("progressbar", { name: "Uploading slow.png" })
+  await expect(progress).toBeVisible()
+  await expect(progress).toHaveAttribute("aria-valuenow", "0")
+  await expect(composer.getByText("0%", { exact: true })).toBeVisible()
+  await expect(composer.getByRole("img", { name: "slow.png" })).toHaveCSS("opacity", "0.58")
+  releasePatch?.()
   await expect(composer.getByRole("button", { name: "Download attachment" })).toBeAttached()
   expect(result.errors).toEqual([])
 })
