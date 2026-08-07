@@ -151,6 +151,7 @@ const table = sqliteTable("session", {
 ## Local Runtime Staging
 
 - After verified OpenCode core changes intended for this host, build an immutable runtime release and atomically stage `/opt/opencode-runtime/bin/opencode` by default so the user's next manual restart loads it. Never restart OpenCode automatically. Skip staging only when the user explicitly requests source-only work or when a build/deployment blocker is reported.
+- The user-facing restart control plane is `https://opencode.wuxie233.com/restart`, protected by the external Nginx/FlyAuth layer. When the user authorizes a restart, use that HTTPS entry and then verify the live service PID, executable release, version, and hash. Do not use `systemctl restart opencode-web.service` or restart the local `127.0.0.1:14096` listener directly unless the user explicitly requests an emergency host-level operation and the web restart path is unavailable.
 
 ## Private Attachments
 
