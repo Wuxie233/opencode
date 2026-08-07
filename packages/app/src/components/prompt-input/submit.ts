@@ -65,7 +65,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
     const upload = attachment.upload
     if (upload?.status !== "complete" || !upload.path || !upload.filename || !upload.mime)
       throw new Error(upload?.error ?? `Attachment is not ready: ${attachment.filename}`)
-    return { path: upload.path, filename: upload.filename, mime: upload.mime }
+    return { id: attachment.id, path: upload.path, filename: upload.filename, mime: upload.mime }
   })
   const setBusy = () => {
     if (!input.optimisticBusy) return

@@ -27,7 +27,7 @@ type BuildRequestPartsInput = {
   messageID: string
   sessionID: string
   sessionDirectory: string
-  uploadedFiles?: { path: string; filename: string; mime: string }[]
+  uploadedFiles?: { id?: string; path: string; filename: string; mime: string }[]
 }
 
 const absolute = (directory: string, path: string) => {
@@ -197,15 +197,20 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
     ]
   })
 
-  const images = input.images.map((attachment) => {
-    return {
-      id: Identifier.ascending("part"),
-      type: "file",
-      mime: attachment.mime,
-      url: attachment.dataUrl,
-      filename: attachment.sourcePath ?? attachment.filename,
-    } satisfies PromptRequestPart
-  })
+  const uploadedImageIDs = new Set(
+    (input.uploadedFiles ?? []).flatMap((attachment) => (attachment.id ? [attachment.id] : [])),
+  )
+  const images = input.images
+    .filter((attachment) => !uploadedImageIDs.has(attachment.id))
+    .map((attachment) => {
+      return {
+        id: Identifier.ascending("part"),
+        type: "file",
+        mime: attachment.mime,
+        url: attachment.dataUrl,
+        filename: attachment.sourcePath ?? attachment.filename,
+      } satisfies PromptRequestPart
+    })
 
   const uploadedFiles = (input.uploadedFiles ?? []).map((attachment) => {
     const path = attachment.path

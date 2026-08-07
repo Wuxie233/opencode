@@ -75,6 +75,30 @@ describe("buildRequestParts", () => {
     expect(result.requestParts.filter((part) => part.type === "file" && part.url.startsWith("data:"))).toHaveLength(1)
   })
 
+  test("uses the uploaded private part once for a visual attachment", () => {
+    const result = buildRequestParts({
+      prompt: [],
+      context: [],
+      images: [
+        {
+          type: "image",
+          id: "img_uploaded",
+          filename: "a.png",
+          mime: "image/png",
+          dataUrl: "data:image/png;base64,AAA",
+        },
+      ],
+      uploadedFiles: [{ id: "img_uploaded", path: "/private/a.webp", filename: "a.webp", mime: "image/webp" }],
+      text: "look",
+      messageID: "msg_uploaded",
+      sessionID: "ses_uploaded",
+      sessionDirectory: "/repo",
+    })
+
+    expect(result.requestParts.filter((part) => part.type === "file")).toHaveLength(1)
+    expect(result.requestParts.find((part) => part.type === "file")?.url).toBe("file:///private/a.webp")
+  })
+
   test("preserves an external attachment source path for the model", () => {
     const result = buildRequestParts({
       prompt: [],
