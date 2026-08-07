@@ -8,12 +8,13 @@ import * as LSPServer from "./server"
 import { Config } from "@/config/config"
 import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, RcMap, Schema, Semaphore } from "effect"
 import { InstanceState } from "@/effect/instance-state"
-import { containsPath } from "@/project/instance-context"
+import { containsPath, type InstanceContext } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
+import { Filesystem } from "@/util/filesystem"
 
 export const Event = LspEvent
 
@@ -95,26 +96,41 @@ const kinds = [
   SymbolKind.Enum,
 ]
 
-const filterExperimentalServers = (servers: Record<string, LSPServer.Info>, flags: RuntimeFlags.Info) => {
-  if (flags.experimentalLspTy) {
-    if (servers["pyright"]) {
-      delete servers["pyright"]
-    }
-  } else {
-    if (servers["ty"]) {
-      delete servers["ty"]
-    }
-  }
-}
-
 type LocInput = { file: string; line: number; character: number }
 
 interface State {
-  clients: LSPClient.Info[]
-  servers: Record<string, LSPServer.Info>
-  broken: Set<string>
-  spawning: Map<string, Promise<LSPClient.Info | undefined>>
+  servers: Record<string, Server>
+  associated: Map<string, Association>
 }
+
+interface Server {
+  info: LSPServer.Info
+  identity: string
+}
+
+interface Association {
+  key: string
+  serverID: string
+  root: string
+}
+
+interface RegistryInput {
+  server: LSPServer.Info
+  root: string
+  ctx: InstanceContext
+}
+
+interface SpawnPermit {
+  input: RegistryInput
+  borrowers: number
+}
+
+type RegistryEntry =
+  | { type: "ready"; client: LSPClient.Info }
+  | { type: "unavailable" }
+  | { type: "unpermitted" }
+
+const CLIENT_IDLE_TTL = "10 minutes"
 
 export interface Interface {
   readonly init: () => Effect.Effect<void>
@@ -141,169 +157,198 @@ const layer = Layer.effect(
     const config = yield* Config.Service
     const flags = yield* RuntimeFlags.Service
     const events = yield* EventV2Bridge.Service
+    const permits = new Map<string, SpawnPermit>()
+    const acquisitionLocks = new Map<string, Semaphore.Semaphore>()
+    const clients = yield* RcMap.make({
+      idleTimeToLive: CLIENT_IDLE_TTL,
+      lookup: (key: string) =>
+        Effect.acquireRelease(
+          Effect.promise(async () => {
+            const input = permits.get(key)?.input
+            if (!input) return { type: "unpermitted" } as const
+            const handle = await input.server.spawn(input.root, input.ctx, flags).catch(() => undefined)
+            if (!handle) return { type: "unavailable" } as const
+            const client = await LSPClient.create({
+              serverID: input.server.id,
+              server: handle,
+              root: input.root,
+              directory: input.ctx.directory,
+              instance: input.ctx,
+            }).catch(async () => {
+              await Process.stop(handle.process)
+              return undefined
+            })
+            if (!client) return { type: "unavailable" } as const
+            return { type: "ready", client } as const
+          }),
+          (entry: RegistryEntry) =>
+            entry.type === "ready" ? Effect.promise(() => entry.client.shutdown()) : Effect.void,
+        ),
+    })
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("LSP.state")(function* (ctx) {
         const cfg = yield* config.get()
 
-        const servers: Record<string, LSPServer.Info> = {}
+        const servers: Record<string, Server> = {}
 
         if (!cfg.lsp) {
           yield* Effect.logInfo("all LSPs are disabled")
         } else {
           for (const server of Object.values(LSPServer)) {
-            servers[server.id] = server
+            servers[server.id] = {
+              info: server,
+              identity: stableStringify({
+                type: "builtin",
+                flags,
+                directory: Filesystem.resolve(ctx.directory),
+                worktree: Filesystem.resolve(ctx.worktree),
+              }),
+            }
           }
 
-          filterExperimentalServers(servers, flags)
+          if (flags.experimentalLspTy) delete servers.pyright
+          else delete servers.ty
 
           if (cfg.lsp !== true) {
             for (const [name, item] of Object.entries(cfg.lsp)) {
-              const existing = servers[name]
+              const existing = servers[name]?.info
               if (item.disabled) {
                 yield* Effect.logInfo(`LSP server ${name} is disabled`)
                 delete servers[name]
                 continue
               }
               servers[name] = {
-                ...existing,
-                id: name,
-                root: existing?.root ?? (async (_file, ctx) => ctx.directory),
-                extensions: item.extensions ?? existing?.extensions ?? [],
-                spawn: async (root) => ({
-                  process: lspspawn(item.command[0], item.command.slice(1), {
-                    cwd: root,
-                    env: { ...process.env, ...item.env },
+                identity: stableStringify({ type: "configured", flags, item }),
+                info: {
+                  ...existing,
+                  id: name,
+                  root: existing?.root ?? (async (_file, ctx) => ctx.directory),
+                  extensions: item.extensions ?? existing?.extensions ?? [],
+                  spawn: async (root) => ({
+                    process: lspspawn(item.command[0], item.command.slice(1), {
+                      cwd: root,
+                      env: { ...process.env, ...item.env },
+                    }),
+                    initialization: item.initialization,
                   }),
-                  initialization: item.initialization,
-                }),
+                },
               }
             }
           }
 
           yield* Effect.logInfo("enabled LSP servers", {
             serverIds: Object.values(servers)
-              .map((server) => server.id)
+              .map((server) => server.info.id)
               .join(", "),
           })
         }
 
         const s: State = {
-          clients: [],
           servers,
-          broken: new Set(),
-          spawning: new Map(),
+          associated: new Map(),
         }
 
-        yield* Effect.addFinalizer(() =>
-          Effect.promise(async () => {
-            await Promise.all(s.clients.map((client) => client.shutdown()))
-          }),
-        )
+        yield* Effect.addFinalizer(() => Effect.sync(() => s.associated.clear()))
 
         return s
       }),
     )
 
-    const getClients = Effect.fnUntraced(function* (file: string) {
+    const candidates = Effect.fnUntraced(function* (file: string) {
       const ctx = yield* InstanceState.context
-      if (!containsPath(file, ctx)) return [] as LSPClient.Info[]
+      if (!containsPath(file, ctx)) return [] as { key: string; input: RegistryInput; association: Association }[]
       const s = yield* InstanceState.get(state)
-      const clients = yield* Effect.promise(async () => {
+      return yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file
-        const result: LSPClient.Info[] = []
-        let updated = 0
-
-        async function schedule(server: LSPServer.Info, root: string, key: string) {
-          const handle = await server
-            .spawn(root, ctx, flags)
-            .then((value) => {
-              if (!value) s.broken.add(key)
-              return value
-            })
-            .catch(() => {
-              s.broken.add(key)
-              return undefined
-            })
-
-          if (!handle) return undefined
-          const client = await LSPClient.create({
-            serverID: server.id,
-            server: handle,
-            root,
-            directory: ctx.directory,
-            instance: ctx,
-          }).catch(async () => {
-            s.broken.add(key)
-            await Process.stop(handle.process)
-            return undefined
-          })
-
-          if (!client) return undefined
-
-          const existing = s.clients.find((x) => x.root === root && x.serverID === server.id)
-          if (existing) {
-            await Process.stop(handle.process)
-            return existing
-          }
-
-          s.clients.push(client)
-          return client
-        }
-
+        const result: { key: string; input: RegistryInput; association: Association }[] = []
         for (const server of Object.values(s.servers)) {
-          if (server.extensions.length && !server.extensions.includes(extension)) continue
+          if (server.info.extensions.length && !server.info.extensions.includes(extension)) continue
 
-          const root = await server.root(file, ctx)
+          const root = await server.info.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
-
-          const match = s.clients.find((x) => x.root === root && x.serverID === server.id)
-          if (match) {
-            result.push(match)
-            continue
-          }
-
-          const inflight = s.spawning.get(root + server.id)
-          if (inflight) {
-            const client = await inflight
-            if (!client) continue
-            result.push(client)
-            continue
-          }
-
-          const task = schedule(server, root, root + server.id)
-          s.spawning.set(root + server.id, task)
-
-          task.finally(() => {
-            if (s.spawning.get(root + server.id) === task) {
-              s.spawning.delete(root + server.id)
-            }
+          const normalizedRoot = Filesystem.resolve(root)
+          const key = stableStringify({
+            root: normalizedRoot,
+            serverID: server.info.id,
+            identity: server.identity,
           })
-
-          const client = await task
-          if (!client) continue
-
-          result.push(client)
-          updated++
+          result.push({
+            key,
+            input: { server: server.info, root: normalizedRoot, ctx },
+            association: { key, serverID: server.info.id, root: normalizedRoot },
+          })
         }
-
-        return { result, updated }
+        return result
       })
-      yield* Effect.forEach(Array.from({ length: clients.updated }), () => events.publish(Event.Updated, {}), {
-        discard: true,
-      })
-      return clients.result
     })
 
     const run = Effect.fnUntraced(function* <T>(file: string, fn: (client: LSPClient.Info) => Promise<T>) {
-      const clients = yield* getClients(file)
-      return yield* Effect.promise(() => Promise.all(clients.map((x) => fn(x))))
+      const s = yield* InstanceState.get(state)
+      return yield* Effect.scoped(
+        Effect.forEach(
+          yield* candidates(file),
+          (candidate) =>
+            Effect.gen(function* () {
+              const permit = permits.get(candidate.key)
+              if (permit) permit.borrowers++
+              else permits.set(candidate.key, { input: candidate.input, borrowers: 1 })
+              const acquisitionLock = acquisitionLocks.get(candidate.key) ?? Semaphore.makeUnsafe(1)
+              acquisitionLocks.set(candidate.key, acquisitionLock)
+              const entry = yield* acquisitionLock.withPermits(1)(
+                Effect.gen(function* () {
+                  const first = yield* RcMap.get(clients, candidate.key)
+                  if (first.type !== "unpermitted") return first
+                  yield* RcMap.invalidate(clients, candidate.key)
+                  return yield* RcMap.get(clients, candidate.key)
+                }),
+              ).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    const current = permits.get(candidate.key)
+                    if (!current || --current.borrowers > 0) return
+                    permits.delete(candidate.key)
+                    acquisitionLocks.delete(candidate.key)
+                  }),
+                ),
+              )
+              if (entry.type !== "ready") {
+                yield* RcMap.invalidate(clients, candidate.key)
+                return undefined
+              }
+              if (!s.associated.has(candidate.association.key)) {
+                s.associated.set(candidate.association.key, candidate.association)
+                yield* events.publish(Event.Updated, {})
+              }
+              return yield* Effect.promise(() => fn(entry.client))
+            }),
+          { concurrency: "unbounded" },
+        ),
+      ).pipe(Effect.map((result) => result.filter((value): value is T => value !== undefined)))
     })
 
-    const runAll = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
+    const runAssociated = Effect.fnUntraced(function* <T>(fn: (client: LSPClient.Info) => Promise<T>) {
       const s = yield* InstanceState.get(state)
-      return yield* Effect.promise(() => Promise.all(s.clients.map((x) => fn(x))))
+      return yield* Effect.scoped(
+        Effect.forEach(
+          Array.from(s.associated.values()),
+          (association) =>
+            Effect.gen(function* () {
+              if (!(yield* RcMap.has(clients, association.key))) {
+                s.associated.delete(association.key)
+                return undefined
+              }
+              const entry = yield* RcMap.get(clients, association.key)
+              if (entry.type !== "ready") {
+                s.associated.delete(association.key)
+                yield* RcMap.invalidate(clients, association.key)
+                return undefined
+              }
+              return yield* Effect.promise(() => fn(entry.client))
+            }),
+          { concurrency: "unbounded" },
+        ),
+      ).pipe(Effect.map((result) => result.filter((value): value is T => value !== undefined)))
     })
 
     const init = Effect.fn("LSP.init")(function* () {
@@ -312,16 +357,14 @@ const layer = Layer.effect(
 
     const status = Effect.fn("LSP.status")(function* () {
       const ctx = yield* InstanceState.context
-      const s = yield* InstanceState.get(state)
-      const result: Status[] = []
-      for (const client of s.clients) {
-        result.push({
+      const result = yield* runAssociated(async (client) => {
+        return {
           id: client.serverID,
-          name: s.servers[client.serverID].id,
+          name: client.serverID,
           root: path.relative(ctx.directory, client.root),
-          status: "connected",
-        })
-      }
+          status: "connected" as const,
+        }
+      })
       return result
     })
 
@@ -331,10 +374,9 @@ const layer = Layer.effect(
       return yield* Effect.promise(async () => {
         const extension = path.parse(file).ext || file
         for (const server of Object.values(s.servers)) {
-          if (server.extensions.length && !server.extensions.includes(extension)) continue
-          const root = await server.root(file, ctx)
+          if (server.info.extensions.length && !server.info.extensions.includes(extension)) continue
+          const root = await server.info.root(file, ctx)
           if (!root) continue
-          if (s.broken.has(root + server.id)) continue
           return true
         }
         return false
@@ -343,27 +385,22 @@ const layer = Layer.effect(
 
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
       yield* Effect.logInfo("touching file", { file: input })
-      const clients = yield* getClients(input)
-      yield* Effect.promise(() =>
-        Promise.all(
-          clients.map(async (client) => {
-            const after = Date.now()
-            const version = await client.notify.open({ path: input })
-            if (!diagnostics) return
-            return client.waitForDiagnostics({
-              path: input,
-              version,
-              mode: diagnostics,
-              after,
-            })
-          }),
-        ).catch(() => {}),
-      )
+      yield* run(input, async (client) => {
+        const after = Date.now()
+        const version = await client.notify.open({ path: input })
+        if (!diagnostics) return
+        return client.waitForDiagnostics({
+          path: input,
+          version,
+          mode: diagnostics,
+          after,
+        })
+      }).pipe(Effect.catch(() => Effect.void))
     })
 
     const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
       const results: Record<string, LSPClient.Diagnostic[]> = {}
-      const all = yield* runAll(async (client) => client.diagnostics)
+      const all = yield* runAssociated(async (client) => client.diagnostics)
       for (const result of all) {
         for (const [p, diags] of result.entries()) {
           const arr = results[p] || []
@@ -431,7 +468,7 @@ const layer = Layer.effect(
     })
 
     const workspaceSymbol = Effect.fn("LSP.workspaceSymbol")(function* (query: string) {
-      const results = yield* runAll((client) =>
+      const results = yield* runAssociated((client) =>
         client.connection
           .sendRequest<Symbol[]>("workspace/symbol", { query })
           .then((result) => result.filter((x) => kinds.includes(x.kind)).slice(0, 10))
@@ -505,3 +542,14 @@ export const node = LayerNode.make({
 })
 
 export * as LSP from "./lsp"
+
+function stableStringify(input: unknown): string {
+  if (input === undefined) return "undefined"
+  if (typeof input === "number" && !Number.isFinite(input)) return String(input)
+  if (!input || typeof input !== "object") return JSON.stringify(input)
+  if (Array.isArray(input)) return `[${input.map(stableStringify).join(",")}]`
+  return `{${Object.entries(input)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${JSON.stringify(key)}:${stableStringify(value)}`)
+    .join(",")}}`
+}

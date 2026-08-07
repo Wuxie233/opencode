@@ -1,4 +1,6 @@
 import path from "node:path"
+import { AsyncLocalStorage } from "node:async_hooks"
+import { createHash } from "node:crypto"
 import { pathToFileURL } from "node:url"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -10,11 +12,15 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import {
   ListRootsRequestSchema,
+  CallToolResultSchema,
+  type CallToolRequest,
+  type CallToolResult,
   type LoggingMessageNotification,
   LoggingMessageNotificationSchema,
   type Tool as MCPToolDef,
   ToolListChangedNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
+import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js"
 import { Config } from "@/config/config"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -26,7 +32,7 @@ import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TuiEvent } from "@/server/tui-event"
-import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Layer, Context, Schema, Scope, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -48,6 +54,10 @@ const CLIENT_OPTIONS = {
     // tasks: {},
   },
 } satisfies ClientOptions
+const POOLED_CLIENT_OPTIONS = { capabilities: {} } satisfies ClientOptions
+export const SharedIdleTimeToLive = Context.Reference<Duration.Duration>("@opencode/MCP/SharedIdleTimeToLive", {
+  defaultValue: () => Duration.minutes(15),
+})
 
 export const Resource = Schema.Struct({
   name: Schema.String,
@@ -72,11 +82,16 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("MCP
 
 type MCPClient = Client
 
-function createClient(directory: string) {
-  const client = new Client({ name: "opencode", version: InstallationVersion }, CLIENT_OPTIONS)
-  client.setRequestHandler(ListRootsRequestSchema, () =>
-    Promise.resolve({ roots: [{ uri: pathToFileURL(directory).href }] }),
+function createClient(directory?: string) {
+  const client = new Client(
+    { name: "opencode", version: InstallationVersion },
+    directory === undefined ? POOLED_CLIENT_OPTIONS : CLIENT_OPTIONS,
   )
+  if (directory !== undefined) {
+    client.setRequestHandler(ListRootsRequestSchema, () =>
+      Promise.resolve({ roots: [{ uri: pathToFileURL(directory).href }] }),
+    )
+  }
   return client
 }
 
@@ -128,6 +143,55 @@ function requestInit(headers: Record<string, string> | undefined, directory: str
   return { headers: { ...headers, "x-opencode-directory": encodeURIComponent(directory) } }
 }
 
+const requestDirectory = new AsyncLocalStorage<string>()
+
+function pooledHeaders(headers: Record<string, string> | undefined) {
+  const result = new Headers(headers)
+  result.delete("x-opencode-directory")
+  return Object.fromEntries(result.entries())
+}
+
+function pooledFetch(input: string | URL | Request, init?: RequestInit) {
+  const headers = new Headers(init?.headers)
+  headers.delete("x-opencode-directory")
+  const directory = requestDirectory.getStore()
+  if (directory !== undefined) headers.set("x-opencode-directory", encodeURIComponent(directory))
+  return fetch(input, { ...init, headers })
+}
+
+export type McpClient = Pick<
+  MCPClient,
+  | "getServerCapabilities"
+  | "getPrompt"
+  | "listPrompts"
+  | "listResources"
+  | "listResourceTemplates"
+  | "readResource"
+  | "listTools"
+> & {
+  readonly callTool: (
+    params: CallToolRequest["params"],
+    resultSchema: typeof CallToolResultSchema,
+    options?: RequestOptions,
+  ) => Promise<CallToolResult>
+}
+
+function clientGateway(client: MCPClient, directory: string): McpClient {
+  const invoke = <Args extends readonly unknown[], Result>(fn: (...args: Args) => Result, args: Args) =>
+    requestDirectory.run(directory, () => fn(...args))
+  return {
+    getServerCapabilities: client.getServerCapabilities.bind(client),
+    callTool: (params, resultSchema, options) =>
+      requestDirectory.run(directory, () => client.callTool(params, resultSchema, options)),
+    getPrompt: (...args) => invoke(client.getPrompt.bind(client), args),
+    listPrompts: (...args) => invoke(client.listPrompts.bind(client), args),
+    listResources: (...args) => invoke(client.listResources.bind(client), args),
+    listResourceTemplates: (...args) => invoke(client.listResourceTemplates.bind(client), args),
+    readResource: (...args) => invoke(client.readResource.bind(client), args),
+    listTools: (...args) => invoke(client.listTools.bind(client), args),
+  }
+}
+
 interface CreateResult {
   mcpClient?: MCPClient
   status: Status
@@ -141,12 +205,175 @@ interface AuthResult {
   client?: MCPClient
 }
 
+interface SharedSubscriber {
+  readonly closed: () => void
+  readonly logging: (params: LoggingMessageNotification["params"]) => Promise<void>
+  readonly toolsChanged: (client: MCPClient) => Promise<void>
+}
+
+interface SharedResult {
+  readonly client: MCPClient
+  readonly defs: MCPToolDef[]
+  readonly instructions?: string
+}
+
+interface SharedEntry {
+  readonly deferred: Deferred.Deferred<SharedResult, Error>
+  readonly closed: Deferred.Deferred<void>
+  readonly subscribers: Set<SharedSubscriber>
+  leases: number
+  idleCancel: Deferred.Deferred<void> | undefined
+  closing: boolean
+}
+
+interface SharedLease extends SharedResult {
+  readonly release: Effect.Effect<void>
+}
+
+interface SharedRegistryInterface {
+  readonly acquire: (input: {
+    readonly key: string
+    readonly connect: Effect.Effect<SharedResult, Error>
+    readonly subscriber: SharedSubscriber
+  }) => Effect.Effect<SharedLease, Error>
+}
+
+class SharedRegistry extends Context.Service<SharedRegistry, SharedRegistryInterface>()(
+  "@opencode/MCP/SharedRegistry",
+) {}
+
+const sharedRegistryLayer = Layer.effect(
+  SharedRegistry,
+  Effect.gen(function* () {
+    const scope = yield* Scope.Scope
+    const idleTimeToLive = yield* SharedIdleTimeToLive
+    const cache = new Map<string, SharedEntry>()
+
+    const closeEntry = (key: string, entry: SharedEntry) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.exit(Deferred.await(entry.deferred))
+        if (Exit.isSuccess(result)) yield* Effect.tryPromise(() => result.value.client.close()).pipe(Effect.ignore)
+        if (cache.get(key) === entry) cache.delete(key)
+        yield* Deferred.succeed(entry.closed, undefined).pipe(Effect.ignore)
+      }).pipe(Effect.uninterruptible)
+
+    const armIdle = (key: string, entry: SharedEntry) =>
+      Effect.suspend(() => {
+        if (cache.get(key) !== entry || entry.closing || entry.leases !== 0 || entry.idleCancel) return Effect.void
+        const cancel = Deferred.makeUnsafe<void>()
+        entry.idleCancel = cancel
+        return Effect.raceFirst(
+          Effect.sleep(idleTimeToLive).pipe(Effect.as(true)),
+          Deferred.await(cancel).pipe(Effect.as(false)),
+        ).pipe(
+          Effect.flatMap((expired) => {
+            if (!expired) {
+              if (entry.idleCancel === cancel) entry.idleCancel = undefined
+              return Effect.void
+            }
+            if (cache.get(key) !== entry || entry.closing || entry.leases !== 0 || entry.idleCancel !== cancel)
+              return Effect.void
+            entry.closing = true
+            entry.idleCancel = undefined
+            return closeEntry(key, entry)
+          }),
+          Effect.forkIn(scope, { startImmediately: true }),
+          Effect.asVoid,
+        )
+      })
+
+    const release = (key: string, entry: SharedEntry, subscriber: SharedSubscriber) =>
+      Effect.sync(() => {
+        if (!entry.subscribers.delete(subscriber)) return false
+        entry.leases--
+        return cache.get(key) === entry && !entry.closing && entry.leases === 0
+      }).pipe(Effect.flatMap((idle) => (idle ? armIdle(key, entry) : Effect.void)))
+
+    const acquire: SharedRegistryInterface["acquire"] = (input) =>
+      Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const existing = cache.get(input.key)
+          if (existing?.closing) {
+            yield* restore(Deferred.await(existing.closed))
+            return yield* acquire(input)
+          }
+          const entry: SharedEntry = existing ?? {
+            deferred: Deferred.makeUnsafe<SharedResult, Error>(),
+            closed: Deferred.makeUnsafe<void>(),
+            subscribers: new Set(),
+            leases: 0,
+            idleCancel: undefined,
+            closing: false,
+          }
+          if (!existing) {
+            cache.set(input.key, entry)
+            yield* Effect.gen(function* () {
+              const exit = yield* Effect.exit(input.connect)
+              if (Exit.isFailure(exit)) {
+                if (cache.get(input.key) === entry) cache.delete(input.key)
+                yield* Deferred.done(entry.deferred, exit)
+                yield* Deferred.succeed(entry.closed, undefined)
+                return
+              }
+              const result = exit.value
+              result.client.onclose = () => {
+                if (cache.get(input.key) !== entry) return
+                cache.delete(input.key)
+                for (const subscriber of entry.subscribers) subscriber.closed()
+                entry.subscribers.clear()
+              }
+              result.client.setNotificationHandler(LoggingMessageNotificationSchema, (notification) =>
+                Promise.all([...entry.subscribers].map((subscriber) => subscriber.logging(notification.params))).then(
+                  () => undefined,
+                ),
+              )
+              if (result.client.getServerCapabilities()?.tools) {
+                result.client.setNotificationHandler(ToolListChangedNotificationSchema, () =>
+                  Promise.all([...entry.subscribers].map((subscriber) => subscriber.toolsChanged(result.client))).then(
+                    () => undefined,
+                  ),
+                )
+              }
+              yield* Deferred.succeed(entry.deferred, result)
+              yield* armIdle(input.key, entry)
+            }).pipe(Effect.forkIn(scope, { startImmediately: true }))
+          }
+          entry.leases++
+          entry.subscribers.add(input.subscriber)
+          if (entry.idleCancel) Deferred.doneUnsafe(entry.idleCancel, Effect.void)
+          entry.idleCancel = undefined
+          const result = yield* restore(Deferred.await(entry.deferred)).pipe(
+            Effect.onExit((exit) => (Exit.isFailure(exit) ? release(input.key, entry, input.subscriber) : Effect.void)),
+          )
+          return { ...result, release: yield* Effect.cached(release(input.key, entry, input.subscriber)) }
+        }),
+      )
+
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        const entries = [...cache.entries()]
+        cache.clear()
+        yield* Effect.forEach(entries, ([key, entry]) => closeEntry(key, entry), { concurrency: "unbounded" })
+      }),
+    )
+
+    return SharedRegistry.of({ acquire })
+  }),
+)
+
+interface ClientHandle {
+  readonly client: MCPClient
+  readonly gateway: McpClient
+  readonly close: Effect.Effect<void>
+  readonly shared: boolean
+}
+
 // --- Effect Service ---
 
 interface State {
   config: Record<string, ConfigMCPV1.Info>
   status: Record<string, Status>
-  clients: Record<string, MCPClient>
+  clients: Record<string, ClientHandle>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
 }
@@ -161,13 +388,13 @@ export interface ServerInstructions {
 export interface McpTool {
   /** Shared cached definition; consumers must copy rather than mutate it. */
   readonly def: MCPToolDef
-  readonly client: MCPClient
+  readonly client: McpClient
   readonly timeout?: number
 }
 
 export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
-  readonly clients: () => Effect.Effect<Record<string, MCPClient>>
+  readonly clients: () => Effect.Effect<Record<string, McpClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
   readonly tools: () => Effect.Effect<Record<string, McpTool>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
@@ -212,6 +439,7 @@ const layer = Layer.effect(
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
     const browser = yield* McpBrowser.Service
+    const sharedRegistry = yield* SharedRegistry
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -219,8 +447,12 @@ const layer = Layer.effect(
      * Connect a client via the given transport with resource safety:
      * on failure the transport is closed; on success the caller owns it.
      */
-    const connectTransport = Effect.fn("MCP.connectTransport")(function* (transport: Transport, timeout: number) {
-      const directory = yield* InstanceState.directory
+    const connectTransport = Effect.fn("MCP.connectTransport")(function* (
+      transport: Transport,
+      timeout: number,
+      pooled = false,
+    ) {
+      const directory = pooled ? undefined : yield* InstanceState.directory
       return yield* Effect.acquireUseRelease(
         Effect.succeed(transport),
         (t) =>
@@ -444,9 +676,28 @@ const layer = Layer.effect(
       Effect.catch(() => Effect.succeed([] as number[])),
     )
 
-    function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
+    function closePhysicalClient(client: MCPClient) {
+      return Effect.gen(function* () {
+        const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
+        if (typeof pid === "number") {
+          for (const child of yield* descendants(pid)) {
+            try {
+              process.kill(child, "SIGTERM")
+            } catch {}
+          }
+        }
+        yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+      })
+    }
+
+    function isolatedHandle(client: MCPClient, directory: string): ClientHandle {
+      return { client, gateway: clientGateway(client, directory), close: closePhysicalClient(client), shared: false }
+    }
+
+    function watch(s: State, name: string, handle: ClientHandle, bridge: EffectBridge.Shape, timeout?: number) {
+      const client = handle.client
       client.onclose = () => {
-        if (s.clients[name] !== client) return
+        if (s.clients[name] !== handle) return
         delete s.clients[name]
         delete s.defs[name]
         delete s.instructions[name]
@@ -465,16 +716,100 @@ const layer = Layer.effect(
 
       if (!client.getServerCapabilities()?.tools) return
       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
-        if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
+        if (s.clients[name] !== handle || s.status[name]?.status !== "connected") return
 
         const listed = await bridge.promise(McpCatalog.defs(client, timeout))
         if (!listed) return
-        if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
+        if (s.clients[name] !== handle || s.status[name]?.status !== "connected") return
 
         s.defs[name] = listed
         await bridge.promise(events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
       })
     }
+
+    function sharedFingerprint(name: string, mcp: ConfigMCPV1.Info & { type: "remote" }) {
+      const headers = Object.entries(pooledHeaders(mcp.headers)).sort(([a], [b]) => a.localeCompare(b))
+      return createHash("sha256")
+        .update(JSON.stringify({ name, url: new URL(mcp.url).href, headers, timeout: mcp.timeout ?? DEFAULT_TIMEOUT }))
+        .digest("hex")
+    }
+
+    const acquireShared = Effect.fn("MCP.acquireShared")(function* (
+      s: State,
+      name: string,
+      mcp: ConfigMCPV1.Info & { type: "remote" },
+      bridge: EffectBridge.Shape,
+      directory: string,
+    ) {
+      const url = remoteURL(mcp.url)
+      if (!url) return yield* Effect.fail(new Error(`Invalid MCP URL for "${name}"`))
+      let current: ClientHandle | undefined
+      const subscriber: SharedSubscriber = {
+        closed: () => {
+          const handle = s.clients[name]
+          if (!handle || handle !== current) return
+          delete s.clients[name]
+          delete s.defs[name]
+          delete s.instructions[name]
+          s.status[name] = { status: "failed", error: "Connection closed" }
+          bridge.fork(
+            Effect.logWarning("MCP connection closed", { server: name }).pipe(
+              Effect.andThen(events.publish(ToolsChanged, { server: name })),
+              Effect.ignore,
+            ),
+          )
+        },
+        logging: (params) => bridge.promise(serverLog(name, params)),
+        toolsChanged: async (client) => {
+          const handle = s.clients[name]
+          if (!handle || handle !== current || handle.client !== client || s.status[name]?.status !== "connected")
+            return
+          const listed = await bridge.promise(McpCatalog.defs(client, mcp.timeout))
+          if (!listed || s.clients[name] !== handle || s.status[name]?.status !== "connected") return
+          s.defs[name] = listed
+          await bridge.promise(events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
+        },
+      }
+      const connect = Effect.gen(function* () {
+        const streamable = yield* connectTransport(
+          new StreamableHTTPClientTransport(url, {
+            requestInit: { headers: pooledHeaders(mcp.headers) },
+            fetch: pooledFetch,
+          }),
+          mcp.timeout ?? DEFAULT_TIMEOUT,
+          true,
+        ).pipe(Effect.exit)
+        const client = Exit.isSuccess(streamable)
+          ? streamable.value
+          : yield* connectTransport(
+              new SSEClientTransport(url, {
+                requestInit: { headers: pooledHeaders(mcp.headers) },
+                fetch: pooledFetch,
+              }),
+              mcp.timeout ?? DEFAULT_TIMEOUT,
+              true,
+            )
+        const defs = client.getServerCapabilities()?.tools ? yield* McpCatalog.defs(client, mcp.timeout) : []
+        if (!defs) {
+          yield* closePhysicalClient(client)
+          return yield* Effect.fail(new Error("Failed to get tools"))
+        }
+        return { client, defs, instructions: client.getInstructions()?.trim() } satisfies SharedResult
+      })
+      const lease = yield* sharedRegistry.acquire({ key: sharedFingerprint(name, mcp), connect, subscriber })
+      const handle: ClientHandle = {
+        client: lease.client,
+        gateway: clientGateway(lease.client, directory),
+        close: lease.release,
+        shared: true,
+      }
+      current = handle
+      return {
+        handle,
+        defs: lease.defs,
+        instructions: lease.instructions,
+      }
+    })
 
     function serverLog(name: string, params: LoggingMessageNotification["params"]) {
       const fields = { server: name, logger: params.logger, level: params.level, data: params.data }
@@ -498,6 +833,7 @@ const layer = Layer.effect(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
         const bridge = yield* EffectBridge.make()
+        const directory = yield* InstanceState.directory
         const config = cfg.mcp ?? {}
         const s: State = {
           config: {},
@@ -521,13 +857,27 @@ const layer = Layer.effect(
                 return
               }
 
+              if (Config.isGlobalMcp(cfg, key) && mcp.type === "remote" && mcp.oauth === false) {
+                const shared = yield* acquireShared(s, key, mcp, bridge, directory).pipe(Effect.option)
+                if (shared._tag === "None") {
+                  s.status[key] = { status: "failed", error: "Unable to connect to MCP server" }
+                  return
+                }
+                s.status[key] = { status: "connected" }
+                s.clients[key] = shared.value.handle
+                s.defs[key] = shared.value.defs
+                if (shared.value.instructions) s.instructions[key] = shared.value.instructions
+                return
+              }
+
               const result = yield* create(key, mcp)
               s.status[key] = result.status
               if (result.mcpClient) {
-                s.clients[key] = result.mcpClient
+                const handle = isolatedHandle(result.mcpClient, directory)
+                s.clients[key] = handle
                 s.defs[key] = result.defs!
                 if (result.instructions) s.instructions[key] = result.instructions
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
+                watch(s, key, handle, bridge, mcp.timeout)
               }
             }),
           { concurrency: "unbounded" },
@@ -539,23 +889,7 @@ const layer = Layer.effect(
             s.clients = {}
             s.defs = {}
             s.instructions = {}
-            yield* Effect.forEach(
-              clients,
-              (client) =>
-                Effect.gen(function* () {
-                  const pid = client.transport instanceof StdioClientTransport ? client.transport.pid : null
-                  if (typeof pid === "number") {
-                    const pids = yield* descendants(pid)
-                    for (const dpid of pids) {
-                      try {
-                        process.kill(dpid, "SIGTERM")
-                      } catch {}
-                    }
-                  }
-                  yield* Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
-                }),
-              { concurrency: "unbounded" },
-            )
+            yield* Effect.forEach(clients, (client) => client.close, { concurrency: "unbounded" })
             pendingOAuthTransports.clear()
           }),
         )
@@ -570,13 +904,13 @@ const layer = Layer.effect(
       delete s.defs[name]
       delete s.instructions[name]
       if (!client) return Effect.void
-      return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
+      return client.close
     }
 
     const storeClient = Effect.fnUntraced(function* (
       s: State,
       name: string,
-      client: MCPClient,
+      handle: ClientHandle,
       listed: MCPToolDef[],
       instructions: string | undefined,
       timeout?: number,
@@ -584,12 +918,12 @@ const layer = Layer.effect(
       const bridge = yield* EffectBridge.make()
       const previous = s.clients[name]
       s.status[name] = { status: "connected" }
-      s.clients[name] = client
+      s.clients[name] = handle
       s.defs[name] = listed
       if (instructions) s.instructions[name] = instructions
       else delete s.instructions[name]
-      watch(s, name, client, bridge, timeout)
-      if (previous) yield* Effect.tryPromise(() => previous.close()).pipe(Effect.ignore)
+      if (!handle.shared) watch(s, name, handle, bridge, timeout)
+      if (previous) yield* previous.close
       return s.status[name]
     })
 
@@ -614,7 +948,7 @@ const layer = Layer.effect(
 
     const clients = Effect.fn("MCP.clients")(function* () {
       const s = yield* InstanceState.get(state)
-      return s.clients
+      return Object.fromEntries<McpClient>(Object.entries(s.clients).map(([name, handle]) => [name, handle.gateway]))
     })
 
     const instructions = Effect.fn("MCP.instructions")(function* () {
@@ -631,6 +965,25 @@ const layer = Layer.effect(
 
     const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
       const s = yield* InstanceState.get(state)
+      const cfg = yield* cfgSvc.get()
+      const directory = yield* InstanceState.directory
+      const bridge = yield* EffectBridge.make()
+      if (!(name in s.config) && Config.isGlobalMcp(cfg, name) && mcp.type === "remote" && mcp.oauth === false) {
+        const shared = yield* acquireShared(s, name, mcp, bridge, directory).pipe(Effect.option)
+        if (shared._tag === "None") {
+          s.status[name] = { status: "failed", error: "Unable to connect to MCP server" }
+          yield* closeClient(s, name)
+          return s.status[name]
+        }
+        return yield* storeClient(
+          s,
+          name,
+          shared.value.handle,
+          shared.value.defs,
+          shared.value.instructions,
+          mcp.timeout,
+        )
+      }
       const result = yield* create(name, mcp)
 
       s.status[name] = result.status
@@ -640,7 +993,14 @@ const layer = Layer.effect(
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, result.instructions, mcp.timeout)
+      return yield* storeClient(
+        s,
+        name,
+        isolatedHandle(result.mcpClient, directory),
+        result.defs!,
+        result.instructions,
+        mcp.timeout,
+      )
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
@@ -686,7 +1046,7 @@ const layer = Layer.effect(
         }
         const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
         for (const def of listed) {
-          result[McpCatalog.toolName(clientName, def.name)] = { def, client, timeout }
+          result[McpCatalog.toolName(clientName, def.name)] = { def, client: client.gateway, timeout }
         }
       }
       return result
@@ -694,7 +1054,7 @@ const layer = Layer.effect(
 
     function collectFromConnected<T extends { name: string }>(
       s: State,
-      listFn: (c: Client, timeout?: number) => Promise<T[]>,
+      listFn: (c: McpClient, timeout?: number) => Promise<T[]>,
       label: string,
       key?: (item: T) => string,
       targetClientName?: string,
@@ -708,7 +1068,7 @@ const layer = Layer.effect(
           ([clientName, client]) =>
             McpCatalog.fetch(
               clientName,
-              client,
+              client.gateway,
               (c) => listFn(c, requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout)),
               label,
               key,
@@ -744,7 +1104,7 @@ const layer = Layer.effect(
 
     const withClient = Effect.fnUntraced(function* <A>(
       clientName: string,
-      fn: (client: MCPClient, timeout?: number) => Promise<A>,
+      fn: (client: McpClient, timeout?: number) => Promise<A>,
       label: string,
       meta?: Record<string, unknown>,
     ) {
@@ -756,7 +1116,8 @@ const layer = Layer.effect(
       }
       const cfg = yield* cfgSvc.get()
       return yield* Effect.tryPromise({
-        try: () => fn(client, requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout)),
+        try: () =>
+          fn(client.gateway, requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout)),
         catch: (error) => error,
       }).pipe(
         Effect.tapError((error) =>
@@ -897,7 +1258,15 @@ const layer = Layer.effect(
 
         const s = yield* InstanceState.get(state)
         yield* auth.clearOAuthState(mcpName)
-        return yield* storeClient(s, mcpName, client, listed, client.getInstructions()?.trim(), mcpConfig.timeout)
+        const directory = yield* InstanceState.directory
+        return yield* storeClient(
+          s,
+          mcpName,
+          isolatedHandle(client, directory),
+          listed,
+          client.getInstructions()?.trim(),
+          mcpConfig.timeout,
+        )
       }
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
@@ -1000,10 +1369,12 @@ const layer = Layer.effect(
 
 export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 
+const sharedRegistryNode = LayerNode.make({ service: SharedRegistry, layer: sharedRegistryLayer, deps: [] })
+
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node, Config.node, McpBrowser.node],
+  deps: [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node, Config.node, McpBrowser.node, sharedRegistryNode],
 })
 
 export * as MCP from "."

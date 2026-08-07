@@ -1,12 +1,26 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import {
+  type CallToolRequest,
+  type CallToolResult,
   CallToolResultSchema,
   ListToolsResultSchema,
   ToolSchema,
   type Tool as MCPToolDef,
 } from "@modelcontextprotocol/sdk/types.js"
+import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js"
 import { dynamicTool, jsonSchema, type JSONSchema7, type Tool } from "ai"
 import { Effect } from "effect"
+
+type ToolClient = {
+  readonly callTool: (
+    params: CallToolRequest["params"],
+    resultSchema: typeof CallToolResultSchema,
+    options?: RequestOptions,
+  ) => Promise<CallToolResult>
+}
+type PromptClient = Pick<Client, "getServerCapabilities" | "listPrompts">
+type ResourceClient = Pick<Client, "getServerCapabilities" | "listResources">
+type ResourceTemplateClient = Pick<Client, "getServerCapabilities" | "listResourceTemplates">
 
 const DEFAULT_TIMEOUT = 30_000
 const MAX_LIST_PAGES = 1_000
@@ -39,7 +53,7 @@ export function defs(client: Client, timeout?: number) {
   return listTools(client, timeout ?? DEFAULT_TIMEOUT).pipe(Effect.catch(() => Effect.void))
 }
 
-export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number): Tool {
+export function convertTool(mcpTool: MCPToolDef, client: ToolClient, timeout?: number): Tool {
   const inputSchema: JSONSchema7 = {
     ...(mcpTool.inputSchema as JSONSchema7),
     type: "object",
@@ -82,10 +96,10 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
   })
 }
 
-export function fetch<T extends { name: string }>(
+export function fetch<T extends { name: string }, C>(
   clientName: string,
-  client: Client,
-  list: (client: Client) => Promise<T[]>,
+  client: C,
+  list: (client: C) => Promise<T[]>,
   label: string,
   key?: (item: T) => string,
 ) {
@@ -118,7 +132,7 @@ export const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_")
 
 export const toolName = (clientName: string, name: string) => sanitize(clientName) + "_" + sanitize(name)
 
-export function prompts(client: Client, timeout?: number) {
+export function prompts(client: PromptClient, timeout?: number) {
   if (!client.getServerCapabilities()?.prompts) return Promise.resolve([])
   return paginate(
     (cursor) => client.listPrompts(cursor === undefined ? undefined : { cursor }, { timeout }),
@@ -126,7 +140,7 @@ export function prompts(client: Client, timeout?: number) {
   )
 }
 
-export function resources(client: Client, timeout?: number) {
+export function resources(client: ResourceClient, timeout?: number) {
   if (!client.getServerCapabilities()?.resources) return Promise.resolve([])
   return paginate(
     (cursor) => client.listResources(cursor === undefined ? undefined : { cursor }, { timeout }),
@@ -134,7 +148,7 @@ export function resources(client: Client, timeout?: number) {
   )
 }
 
-export function resourceTemplates(client: Client, timeout?: number) {
+export function resourceTemplates(client: ResourceTemplateClient, timeout?: number) {
   if (!client.getServerCapabilities()?.resources) return Promise.resolve([])
   return paginate(
     (cursor) => client.listResourceTemplates(cursor === undefined ? undefined : { cursor }, { timeout }),

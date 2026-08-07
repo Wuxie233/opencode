@@ -8,8 +8,9 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LSP } from "@/lsp/lsp"
 import * as LSPServer from "@/lsp/server"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { TestInstance } from "../fixture/fixture"
+import { provideInstance, reloadInstance, testInstanceStoreLayer, TestInstance, tmpdirScoped } from "../fixture/fixture"
 import { awaitWithTimeout, testEffect } from "../lib/effect"
+import { Process } from "@/util/process"
 
 const lspLayer = (flags: Parameters<typeof RuntimeFlags.layer>[0] = {}) =>
   LayerNode.compile(LayerNode.group([LSP.node, Config.node, RuntimeFlags.node, EventV2Bridge.node]), [
@@ -17,6 +18,9 @@ const lspLayer = (flags: Parameters<typeof RuntimeFlags.layer>[0] = {}) =>
   ])
 
 const it = testEffect(Layer.mergeAll(lspLayer(), LayerNode.compile(CrossSpawnSpawner.node)))
+const multiInstanceIt = testEffect(
+  Layer.mergeAll(lspLayer(), LayerNode.compile(CrossSpawnSpawner.node), testInstanceStoreLayer),
+)
 const experimentalTyIt = testEffect(
   Layer.mergeAll(lspLayer({ experimentalLspTy: true }), LayerNode.compile(CrossSpawnSpawner.node)),
 )
@@ -228,4 +232,95 @@ describe("lsp.spawn", () => {
       ),
     { config: { lsp: true } },
   )
+
+  it.instance(
+    "reuses a custom LSP across instance reloads without observational spawning",
+    () =>
+      Effect.gen(function* () {
+        const dir = (yield* TestInstance).directory
+        const lsp = yield* LSP.Service
+        const spawn = spyOn(Process, "spawn")
+        const file = path.join(dir, "sample.repro")
+        yield* Effect.promise(() => Bun.write(file, "sample\n"))
+
+        try {
+          expect(yield* lsp.status()).toEqual([])
+          expect(yield* lsp.diagnostics()).toEqual({})
+          expect(yield* lsp.workspaceSymbol("sample")).toEqual([])
+          expect(spawn).toHaveBeenCalledTimes(0)
+
+          yield* Effect.all([lsp.touchFile(file), lsp.touchFile(file)], { concurrency: "unbounded" })
+          expect((yield* lsp.status()).map((item) => item.id)).toEqual(["fake"])
+          expect(spawn).toHaveBeenCalledTimes(1)
+
+          yield* reloadInstance({ directory: dir })
+          expect(yield* lsp.status()).toEqual([])
+          yield* lsp.touchFile(file)
+          expect((yield* lsp.status()).map((item) => item.id)).toEqual(["fake"])
+          expect(spawn).toHaveBeenCalledTimes(1)
+
+          yield* Effect.promise(() =>
+            Bun.write(
+              path.join(dir, "opencode.json"),
+              JSON.stringify({
+                lsp: {
+                  fake: {
+                    command: [process.execPath, fakeServerPath],
+                    extensions: [".repro"],
+                    initialization: { revision: 2 },
+                  },
+                },
+              }),
+            ),
+          )
+          yield* reloadInstance({ directory: dir })
+          yield* lsp.touchFile(file)
+          expect(spawn).toHaveBeenCalledTimes(2)
+        } finally {
+          spawn.mockRestore()
+        }
+      }),
+    {
+      config: {
+        lsp: {
+          fake: {
+            command: [process.execPath, fakeServerPath],
+            extensions: [".repro"],
+          },
+        },
+      },
+    },
+  )
+
+  multiInstanceIt.live("isolates custom LSP clients by workspace root", () =>
+    Effect.gen(function* () {
+      const config = {
+        lsp: {
+          fake: {
+            command: [process.execPath, fakeServerPath],
+            extensions: [".repro"],
+          },
+        },
+      }
+      const first = yield* tmpdirScoped({ config })
+      const second = yield* tmpdirScoped({ config })
+      const firstFile = path.join(first, "sample.repro")
+      const secondFile = path.join(second, "sample.repro")
+      yield* Effect.all([
+        Effect.promise(() => Bun.write(firstFile, "first\n")),
+        Effect.promise(() => Bun.write(secondFile, "second\n")),
+      ])
+
+      const lsp = yield* LSP.Service
+      const spawn = spyOn(Process, "spawn")
+      try {
+        yield* lsp.touchFile(firstFile).pipe(provideInstance(first))
+        yield* lsp.touchFile(secondFile).pipe(provideInstance(second))
+        expect(spawn).toHaveBeenCalledTimes(2)
+      } finally {
+        spawn.mockRestore()
+      }
+    }),
+  )
+
 })

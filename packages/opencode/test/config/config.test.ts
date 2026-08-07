@@ -1502,6 +1502,28 @@ remoteProjectOverride.it.instance(
   },
 )
 
+it.live("tracks globally shareable MCP provenance without exposing it in writable config", () =>
+  withConfigTree(
+    {
+      global: {
+        mcp: {
+          shared: { type: "remote", url: "https://shared.example.com/mcp", oauth: false },
+          overridden: { type: "remote", url: "https://overridden.example.com/mcp", oauth: false },
+        },
+      },
+      project: { mcp: { overridden: { enabled: false } } },
+    },
+    Effect.gen(function* () {
+      const config = yield* Config.use.get()
+      expect(Config.isGlobalMcp(config, "shared")).toBe(true)
+      expect(Config.isGlobalMcp(config, "overridden")).toBe(false)
+      expect(Reflect.ownKeys(config).every((key) => typeof key !== "symbol")).toBe(true)
+      const updated = yield* Config.use.updateGlobal(config)
+      expect(Reflect.ownKeys(updated.info).every((key) => typeof key !== "symbol")).toBe(true)
+    }),
+  ),
+)
+
 const trailingSlashWellKnown = wellKnown({
   authUrl: "https://example.com/",
   config: {

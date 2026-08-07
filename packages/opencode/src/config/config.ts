@@ -108,10 +108,16 @@ async function resolveLoadedPlugins<T extends { plugin?: ConfigPluginV1.Spec[] }
   return config
 }
 
+const mcpProvenance = new WeakMap<ConfigV1.Info, Record<string, ConfigPlugin.Scope>>()
+
 type Info = ConfigV1.Info & {
   // plugin_origins is derived state, not a persisted config field. It keeps each winning plugin spec together
   // with the file and scope it came from so later runtime code can make location-sensitive decisions.
   plugin_origins?: ConfigPlugin.Origin[]
+}
+
+export function isGlobalMcp(info: Info, name: string) {
+  return mcpProvenance.get(info)?.[name] === "global"
 }
 
 type State = {
@@ -349,8 +355,16 @@ const layer = Layer.effect(
         })
 
         const merge = (source: string, next: Info, kind?: ConfigPlugin.Scope) => {
-          result = mergeConfigConcatArrays(result, next)
-          return mergePluginOrigins(source, next.plugin, kind)
+          return Effect.gen(function* () {
+            const scope = kind ?? (yield* pluginScopeForSource(source))
+            const provenance = { ...mcpProvenance.get(result) }
+            for (const name of Object.keys(next.mcp ?? {})) {
+              if (scope === "local" || provenance[name] === undefined) provenance[name] = scope
+            }
+            result = mergeConfigConcatArrays(result, next)
+            mcpProvenance.set(result, provenance)
+            yield* mergePluginOrigins(source, next.plugin, scope)
+          })
         }
 
         for (const [key, value] of Object.entries(auth)) {
@@ -524,12 +538,13 @@ const layer = Layer.effect(
         // macOS managed preferences (.mobileconfig deployed via MDM) override everything
         const managed = yield* Effect.promise(() => ConfigManaged.readManagedPreferences())
         if (managed) {
-          result = mergeConfigConcatArrays(
-            result,
+          yield* merge(
+            managed.source,
             yield* loadConfig(managed.text, {
               dir: path.dirname(managed.source),
               source: managed.source,
             }),
+            "global",
           )
         }
 

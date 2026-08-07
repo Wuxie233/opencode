@@ -1,9 +1,13 @@
+import fs from "node:fs/promises"
+import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { expect } from "bun:test"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js"
 import {
+  CallToolRequestSchema,
+  CallToolResultSchema,
   GetPromptRequestSchema,
   ListPromptsRequestSchema,
   ListResourcesRequestSchema,
@@ -14,14 +18,25 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Cause, Effect, Exit } from "effect"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { Global } from "@opencode-ai/core/global"
+import { Cause, Duration, Effect, Exit, Layer } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
-import { MCP } from "../../src/mcp/index"
+import { MCP, SharedIdleTimeToLive } from "../../src/mcp/index"
 import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
-import { TestInstance } from "../fixture/fixture"
+import { Config } from "../../src/config/config"
+import { InstanceBootstrap } from "../../src/project/bootstrap-service"
+import { InstanceStore } from "../../src/project/instance-store"
+import { provideInstanceEffect, TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
 const it = testEffect(LayerNode.compile(MCP.node))
+const noopBootstrap = Layer.succeed(InstanceBootstrap.Service, InstanceBootstrap.Service.of({ run: Effect.void }))
+const pooledIt = testEffect(
+  LayerNode.compile(LayerNode.group([MCP.node, Config.node, InstanceStore.node, CrossSpawnSpawner.node]), [
+    [InstanceStore.bootstrapNode, noopBootstrap],
+  ]).pipe(Layer.provide(Layer.succeed(SharedIdleTimeToLive, Duration.millis(25)))),
+)
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 
 type Page<T> = { items: T[]; nextCursor?: string }
@@ -38,7 +53,10 @@ interface LifecycleServerState {
   listToolsError?: string
   requestDelay?: number
   roots?: Array<{ uri: string; name?: string }>
+  rootsCapability?: boolean
   requests: string[]
+  directories: string[]
+  initialized: number
   aborted: number
 }
 
@@ -52,6 +70,8 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         resources: [],
         resourceTemplates: [],
         requests: [],
+        directories: [],
+        initialized: 0,
         aborted: 0,
       }
 
@@ -61,11 +81,17 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
           { capabilities, instructions: input?.instructions },
         )
         const transport = new WebStandardStreamableHTTPServerTransport({
-          sessionIdGenerator: () => crypto.randomUUID(),
+          sessionIdGenerator: () => {
+            state.initialized++
+            return crypto.randomUUID()
+          },
           enableJsonResponse: true,
         })
 
         if (capabilities.tools) {
+          protocol.setRequestHandler(CallToolRequestSchema, () =>
+            Promise.resolve({ content: [{ type: "text", text: "tool result" }] }),
+          )
           protocol.setRequestHandler(ListToolsRequestSchema, (request) => {
             if (state.listToolsError) throw new Error(state.listToolsError)
             const page = state.toolPages?.[request.params?.cursor ?? "initial"]
@@ -101,8 +127,9 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         }
 
         protocol.oninitialized = () => {
+          state.rootsCapability = !!protocol.getClientCapabilities()?.roots
           if (!input?.requestRoots) return
-          if (!protocol.getClientCapabilities()?.roots) return
+          if (!state.rootsCapability) return
           void Bun.sleep(25)
             .then(() => protocol.listRoots())
             .then((result) => {
@@ -119,6 +146,8 @@ function lifecycleServer(input?: { capabilities?: ServerCapabilities; instructio
         port: 0,
         fetch(request) {
           state.requests.push(request.method)
+          const directory = request.headers.get("x-opencode-directory")
+          if (directory) state.directories.push(directory)
           request.signal.addEventListener("abort", () => state.aborted++)
           return current.transport.handleRequest(request)
         },
@@ -181,6 +210,225 @@ function statusName(status: Record<string, MCPNS.Status> | MCPNS.Status, server:
 }
 
 const remote = (url: string, timeout?: number) => ({ type: "remote" as const, url, oauth: false as const, timeout })
+
+const withGlobalMcp = <A, E, R>(url: string, effect: Effect.Effect<A, E, R>, options?: { omitOAuth?: boolean }) =>
+  Effect.acquireUseRelease(
+    Effect.promise(async () => {
+      const config = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-global-"))
+      await Bun.write(
+        path.join(config, "opencode.json"),
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          mcp: {
+            shared: {
+              type: "remote",
+              url,
+              headers: { "x-opencode-directory": "configured-directory" },
+              ...(options?.omitOAuth ? {} : { oauth: false }),
+            },
+          },
+        }),
+      )
+      return { config, previous: Global.Path.config }
+    }),
+    ({ config }) =>
+      Effect.gen(function* () {
+        if (!Reflect.set(Global.Path, "config", config)) return yield* Effect.die("Failed to set the test config path")
+        yield* Config.use.invalidate()
+        return yield* effect
+      }),
+    ({ config, previous }) =>
+      Effect.gen(function* () {
+        yield* InstanceStore.use.disposeAll()
+        if (!Reflect.set(Global.Path, "config", previous)) return yield* Effect.die("Failed to restore the config path")
+        yield* Config.use.invalidate()
+        yield* Effect.promise(() => fs.rm(config, { recursive: true, force: true }))
+      }).pipe(Effect.ignore),
+  )
+
+pooledIt.live("shares proven-global remote clients while preserving directory context and leases", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer({ capabilities: { tools: { listChanged: true } }, requestRoots: true })
+    const first = yield* Effect.acquireRelease(
+      Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-first-"))),
+      (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+    )
+    const second = yield* Effect.acquireRelease(
+      Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-second-"))),
+      (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+    )
+    yield* withGlobalMcp(
+      server.url,
+      Effect.gen(function* () {
+        const statuses = yield* Effect.all(
+          [MCP.use.status().pipe(provideInstanceEffect(first)), MCP.use.status().pipe(provideInstanceEffect(second))],
+          { concurrency: "unbounded" },
+        )
+        expect(statuses.map((status) => status.shared?.status)).toEqual(["connected", "connected"])
+        expect(server.state.initialized).toBe(1)
+        expect(server.state.rootsCapability).toBe(false)
+        expect(server.state.roots).toBeUndefined()
+
+        server.state.directories = []
+        yield* Effect.all(
+          [first, second].map((directory) =>
+            Effect.gen(function* () {
+              const tool = (yield* MCP.use.tools()).shared_test_tool
+              if (!tool) return yield* Effect.die("Shared MCP tool was not discovered")
+              yield* Effect.promise(() =>
+                tool.client.callTool({ name: tool.def.name, arguments: {} }, CallToolResultSchema),
+              )
+            }).pipe(provideInstanceEffect(directory)),
+          ),
+          { concurrency: "unbounded" },
+        )
+        expect(server.state.directories.sort()).toEqual([encodeURIComponent(first), encodeURIComponent(second)].sort())
+
+        server.state.tools = [{ name: "next_tool", inputSchema: { type: "object", properties: {} } }]
+        yield* Effect.promise(server.sendToolListChanged)
+        yield* pollWithTimeout(
+          Effect.all(
+            [first, second].map((directory) =>
+              MCP.use.tools().pipe(
+                Effect.map((tools) => (tools.shared_next_tool ? true : undefined)),
+                provideInstanceEffect(directory),
+              ),
+            ),
+            { concurrency: "unbounded" },
+          ).pipe(Effect.map((ready) => (ready.every(Boolean) ? true : undefined))),
+          "shared tool list did not reach both directories",
+        )
+
+        yield* InstanceStore.use.disposeDirectory(first)
+        expect(server.state.aborted).toBe(0)
+        expect(Object.keys(yield* MCP.use.tools().pipe(provideInstanceEffect(second)))).toEqual(["shared_next_tool"])
+
+        yield* InstanceStore.use.disposeDirectory(second)
+        yield* pollWithTimeout(
+          Effect.sync(() => (server.state.aborted > 0 ? true : undefined)),
+          "shared transport did not close after the last lease expired",
+        )
+      }),
+    )
+  }),
+)
+
+pooledIt.live("keeps project-overridden remote clients isolated", () =>
+  Effect.gen(function* () {
+    const globalServer = yield* lifecycleServer({ requestRoots: true })
+    const projectServer = yield* lifecycleServer({ requestRoots: true })
+    const globalDirectory = yield* Effect.acquireRelease(
+      Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-global-project-"))),
+      (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+    )
+    const projectDirectory = yield* Effect.acquireRelease(
+      Effect.promise(async () => {
+        const directory = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-local-project-"))
+        await fs.mkdir(path.join(directory, ".opencode"))
+        await Bun.write(
+          path.join(directory, ".opencode", "opencode.json"),
+          JSON.stringify({ mcp: { shared: remote(projectServer.url) } }),
+        )
+        return directory
+      }),
+      (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+    )
+    yield* withGlobalMcp(
+      globalServer.url,
+      Effect.gen(function* () {
+        const statuses = yield* Effect.all(
+          [
+            MCP.use.status().pipe(provideInstanceEffect(globalDirectory)),
+            MCP.use.status().pipe(provideInstanceEffect(projectDirectory)),
+          ],
+          { concurrency: "unbounded" },
+        )
+        expect(statuses.map((status) => status.shared?.status)).toEqual(["connected", "connected"])
+        expect(globalServer.state.initialized).toBe(1)
+        expect(projectServer.state.initialized).toBe(1)
+        expect(globalServer.state.roots).toBeUndefined()
+        expect(
+          yield* pollWithTimeout(
+            Effect.sync(() => projectServer.state.roots),
+            "project-overridden MCP did not receive its directory root",
+          ),
+        ).toEqual([{ uri: pathToFileURL(projectDirectory).href }])
+      }),
+    )
+  }),
+)
+
+pooledIt.live("keeps global remote clients with implicit OAuth isolated", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer({ capabilities: { tools: {} } })
+    const directory = yield* Effect.acquireRelease(
+      Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-implicit-oauth-"))),
+      (value) => Effect.promise(() => fs.rm(value, { recursive: true, force: true })),
+    )
+    yield* withGlobalMcp(
+      server.url,
+      Effect.gen(function* () {
+        expect((yield* MCP.use.status().pipe(provideInstanceEffect(directory))).shared?.status).toBe("connected")
+        expect(server.state.rootsCapability).toBe(true)
+
+        server.state.directories = []
+        yield* Effect.gen(function* () {
+          const tool = (yield* MCP.use.tools()).shared_test_tool
+          if (!tool) return yield* Effect.die("Isolated MCP tool was not discovered")
+          yield* Effect.promise(() => tool.client.callTool({ name: tool.def.name, arguments: {} }, CallToolResultSchema))
+        }).pipe(provideInstanceEffect(directory))
+        expect(server.state.directories).toEqual([encodeURIComponent(directory)])
+      }),
+      { omitOAuth: true },
+    )
+  }),
+)
+
+pooledIt.live("shares concurrent initialization failure and retries cleanly", () =>
+  Effect.gen(function* () {
+    const server = yield* lifecycleServer({ capabilities: { tools: {} } })
+    server.state.listToolsError = "discovery failed"
+    const first = yield* Effect.acquireRelease(
+      Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-failure-first-"))),
+      (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+    )
+    const second = yield* Effect.acquireRelease(
+      Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "opencode-mcp-failure-second-"))),
+      (directory) => Effect.promise(() => fs.rm(directory, { recursive: true, force: true })),
+    )
+    yield* withGlobalMcp(
+      server.url,
+      Effect.gen(function* () {
+        const failed = yield* Effect.all(
+          [MCP.use.status().pipe(provideInstanceEffect(first)), MCP.use.status().pipe(provideInstanceEffect(second))],
+          { concurrency: "unbounded" },
+        )
+        expect(failed.map((status) => status.shared?.status)).toEqual(["failed", "failed"])
+        expect(server.state.initialized).toBe(1)
+        yield* pollWithTimeout(
+          Effect.sync(() => (server.state.aborted > 0 ? true : undefined)),
+          "failed shared initialization did not close its transport",
+        )
+
+        server.state.listToolsError = undefined
+        yield* Effect.promise(server.restart)
+        yield* Effect.all(
+          [
+            MCP.use.connect("shared").pipe(provideInstanceEffect(first)),
+            MCP.use.connect("shared").pipe(provideInstanceEffect(second)),
+          ],
+          { concurrency: "unbounded" },
+        )
+        const retried = yield* Effect.all(
+          [MCP.use.status().pipe(provideInstanceEffect(first)), MCP.use.status().pipe(provideInstanceEffect(second))],
+          { concurrency: "unbounded" },
+        )
+        expect(retried.map((status) => status.shared?.status)).toEqual(["connected", "connected"])
+        expect(server.state.initialized).toBe(2)
+      }),
+    )
+  }),
+)
 
 it.instance("advertises and lists the instance directory as its root", () =>
   Effect.gen(function* () {
