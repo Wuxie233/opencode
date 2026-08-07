@@ -29,15 +29,16 @@ type PromptImageAttachmentsProps = {
 
 const fallbackClass = "size-16 rounded-md bg-surface-base flex items-center justify-center border border-border-base"
 const imageClass =
-  "size-16 rounded-md object-cover border border-border-base hover:border-border-strong-base transition-colors"
-const imageClassV2 = "w-[58px] h-[46px] rounded-[6px] object-cover"
+  "size-16 rounded-md object-cover border border-border-base hover:border-border-strong-base transition-[border-color,transform] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.02]"
+const imageClassV2 =
+  "w-[58px] h-[46px] rounded-[6px] object-cover transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.02] motion-reduce:transition-none motion-reduce:transform-none"
 // inset box-shadows do not paint over <img> content, so the hairline is a separate overlay
 const imageHairlineClassV2 =
   "absolute inset-0 rounded-[6px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-base)] pointer-events-none"
 const removeClass =
-  "absolute -top-1.5 -right-1.5 z-20 size-5 rounded-full bg-surface-raised-stronger-non-alpha border border-border-base flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-raised-base-hover"
+  "absolute -top-1.5 -right-1.5 z-20 size-5 rounded-full bg-surface-raised-stronger-non-alpha border border-border-base flex items-center justify-center opacity-0 group-hover:opacity-100 transition-[opacity,transform,background-color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-105 hover:bg-surface-raised-base-hover motion-reduce:transition-none motion-reduce:transform-none"
 const removeClassV2 =
-  "absolute -top-1 -right-1 z-20 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+  "absolute -top-1 -right-1 z-20 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-105 motion-reduce:transition-none motion-reduce:transform-none"
 const nameClass = "absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/50 rounded-b-md"
 
 export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (props) => {
@@ -139,7 +140,7 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                   <button
                     type="button"
                     onClick={() => props.onRetry(attachment)}
-                    class="absolute inset-0 z-10 flex items-center justify-center rounded-[6px] bg-black/55 text-white"
+                    class="prompt-attachment-status absolute inset-0 z-10 flex items-center justify-center rounded-[6px] bg-black/55 text-white"
                     aria-label="Retry upload"
                   >
                     <Icon name="reset" class="size-4" />
@@ -151,7 +152,7 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                   <button
                     type="button"
                     onClick={() => props.onDownload(attachment)}
-                    class="absolute right-1 bottom-1 z-10 flex size-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    class="absolute right-1 bottom-1 z-10 flex size-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:opacity-100 group-hover:scale-105 motion-reduce:transition-none motion-reduce:transform-none"
                     aria-label="Download attachment"
                   >
                     <Icon name="download" class="size-3" />
@@ -162,8 +163,8 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                 <Show when={attachment.upload?.status === "uploading"}>
                   <div class="absolute inset-x-1 bottom-1 z-10 h-1 overflow-hidden rounded-full bg-black/30">
                     <div
-                      class="h-full bg-white"
-                      style={{ width: `${Math.round((attachment.upload?.progress ?? 0) * 100)}%` }}
+                      class="prompt-attachment-progress h-full origin-left bg-white"
+                      style={{ transform: `scaleX(${attachment.upload?.progress ?? 0})` }}
                     />
                   </div>
                 </Show>
@@ -174,7 +175,7 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                   when={props.newLayoutDesigns}
                   fallback={
                     <Tooltip value={attachment.filename} placement="top" contentClass="break-all">
-                      <div class="relative group">
+                      <div class="relative group prompt-attachment-enter">
                         {media()}
                         {name()}
                         {status()}
@@ -185,7 +186,7 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                     </Tooltip>
                   }
                 >
-                  <div class="relative group shrink-0">
+                  <div class="relative group shrink-0 prompt-attachment-enter">
                     <TooltipV2 value={attachment.filename} placement="top" contentClass="break-all">
                       {media()}
                       {status()}

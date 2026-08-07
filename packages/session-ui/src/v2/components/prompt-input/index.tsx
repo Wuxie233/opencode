@@ -431,7 +431,7 @@ export function PromptInputV2Attachments(props: {
             {(attachment) => {
               const uploading = attachment.upload?.status === "uploading"
               return (
-                <div class="relative group shrink-0">
+                <div class="relative group shrink-0 prompt-attachment-enter">
                   <TooltipV2 value={attachment.filename} placement="top" contentClass="break-all">
                     <Show
                       when={attachment.mime.startsWith("image/")}
@@ -444,7 +444,7 @@ export function PromptInputV2Attachments(props: {
                       <img
                         src={attachment.blob.url}
                         alt={attachment.filename}
-                        class="w-[58px] h-[46px] rounded-[6px] object-cover"
+                        class="w-[58px] h-[46px] rounded-[6px] object-cover transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-[1.02] motion-reduce:transition-none motion-reduce:transform-none"
                         onClick={() => props.onAttachmentClick?.(attachment)}
                       />
                       <div class="absolute inset-0 rounded-[6px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-base)] pointer-events-none" />
@@ -453,8 +453,8 @@ export function PromptInputV2Attachments(props: {
                   <Show when={attachment.upload?.status === "uploading"}>
                     <div class="absolute inset-x-1 bottom-1 z-10 h-1 overflow-hidden rounded-full bg-black/30">
                       <div
-                        class="h-full bg-white"
-                        style={{ width: `${Math.round((attachment.upload?.progress ?? 0) * 100)}%` }}
+                        class="prompt-attachment-progress h-full origin-left bg-white"
+                        style={{ transform: `scaleX(${attachment.upload?.progress ?? 0})` }}
                       />
                     </div>
                   </Show>
@@ -462,7 +462,7 @@ export function PromptInputV2Attachments(props: {
                     <button
                       type="button"
                       onClick={() => props.onAttachmentRetry?.(attachment)}
-                      class="absolute inset-0 z-10 flex items-center justify-center rounded-[6px] bg-black/55 text-white"
+                      class="prompt-attachment-status absolute inset-0 z-10 flex items-center justify-center rounded-[6px] bg-black/55 text-white"
                       aria-label="Retry upload"
                     >
                       <Icon name="reset" class="size-4" />
@@ -472,7 +472,7 @@ export function PromptInputV2Attachments(props: {
                     <button
                       type="button"
                       onClick={() => props.onAttachmentDownload?.(attachment)}
-                      class="absolute end-1 bottom-1 z-10 flex size-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                      class="absolute end-1 bottom-1 z-10 flex size-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:opacity-100 group-hover:scale-105 motion-reduce:transition-none motion-reduce:transform-none"
                       aria-label="Download attachment"
                     >
                       <Icon name="download" class="size-3" />
@@ -483,7 +483,7 @@ export function PromptInputV2Attachments(props: {
                     onClick={() =>
                       uploading ? props.onAttachmentCancel?.(attachment) : props.onAttachmentRemove(attachment)
                     }
-                    class="absolute -top-1 -end-1 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    class="absolute -top-1 -end-1 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-[opacity,transform] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover:scale-105 motion-reduce:transition-none motion-reduce:transform-none"
                     aria-label={uploading ? "Cancel upload" : props.removeLabel}
                   >
                     <IconV2 name="outline-xmark" class="text-v2-icon-icon-contrast" />

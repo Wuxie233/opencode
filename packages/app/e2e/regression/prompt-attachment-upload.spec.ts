@@ -102,3 +102,40 @@ for (const viewport of [
     expect(cardBox!.x + cardBox!.width).toBeLessThanOrEqual(composerBox!.x + composerBox!.width)
   })
 }
+
+test("keeps image previews working after upload", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await setup(page)
+  const composer = page.locator('[data-component="prompt-input-v2"]')
+  await expectAppVisible(composer)
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "pixel.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    ),
+  })
+
+  await expect(composer.getByRole("img", { name: "pixel.png" })).toBeVisible()
+  await expect(composer.getByRole("button", { name: "Download attachment" })).toBeAttached()
+})
+
+test("disables attachment entrance motion when reduced motion is requested", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" })
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await setup(page)
+  const composer = page.locator('[data-component="prompt-input-v2"]')
+  await expectAppVisible(composer)
+
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "reduced.bin",
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from([1, 2, 3, 4]),
+  })
+
+  const attachment = composer.locator(".prompt-attachment-enter", { hasText: "reduced.bin" })
+  await expect(attachment).toBeVisible()
+  await expect(attachment).toHaveCSS("animation-name", "none")
+})
