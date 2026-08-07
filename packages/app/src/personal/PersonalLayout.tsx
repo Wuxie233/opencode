@@ -286,7 +286,8 @@ export default function PersonalLayout(props: ParentProps) {
     await archiveHomeSession({
       server: ServerConnection.Key.make(item.server),
       session: { id: item.sessionId, directory: item.directory },
-      update: (value) => ctx.sdk.client.session.update(value),
+      archive: (sessionID) =>
+        ctx.sdk.client.session.update({ sessionID, time: { archived: Date.now() } }),
       remove: () =>
         setStore(
           produce((draft) => {
