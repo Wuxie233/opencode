@@ -51,6 +51,7 @@ type FollowupSendInput = {
   messageID?: string
   optimisticBusy?: boolean
   before?: () => Promise<boolean> | boolean
+  getBlob?: (id: string) => Promise<Blob | null>
 }
 
 const draftText = (prompt: Prompt) => prompt.map((part) => ("content" in part ? part.content : "")).join("")
@@ -120,7 +121,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
   const encodedImages = await Promise.all(
     images.flatMap((attachment) =>
       visualAttachmentMime(attachment.mime)
-        ? [blobDataUrl(attachment.blob, attachment.mime).then((dataUrl) => ({ ...attachment, dataUrl }))]
+        ? [blobDataUrl(attachment.blob, attachment.mime, input.getBlob).then((dataUrl) => ({ ...attachment, dataUrl }))]
         : [],
     ),
   )
@@ -237,6 +238,7 @@ type PromptSubmitInput = {
   onAbort?: () => void
   onSubmit?: () => void
   model?: ModelSelection
+  getBlob?: (id: string) => Promise<Blob | null>
 }
 
 export function createPromptSubmit(input: PromptSubmitInput) {
@@ -650,6 +652,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       messageID,
       optimisticBusy: sessionDirectory === projectDirectory,
       before: waitForWorktree,
+      getBlob: input.getBlob,
     }).catch((err) => {
       pending.delete(pendingKey(session.id))
       if (sessionDirectory === projectDirectory) {

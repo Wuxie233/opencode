@@ -1243,6 +1243,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
       onAbort: props.onAbort,
       onSubmit: props.onSubmit,
       model: props.controls.model.selection,
+      getBlob: platform.draftStore?.getBlob,
     })
 
   const handleKeyDown = (event: KeyboardEvent) => {

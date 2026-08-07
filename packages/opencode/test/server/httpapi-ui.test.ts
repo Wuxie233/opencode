@@ -46,6 +46,7 @@ const it = testEffect(Layer.mergeAll(testStateLayer, fsUtilLayer, RuntimeFlags.l
 describe("web UI security policy", () => {
   test("allows browser blob previews", () => {
     expect(csp()).toContain("img-src 'self' blob: data: https:")
+    expect(csp()).toContain("connect-src * blob: data:")
   })
 })
 
@@ -357,7 +358,7 @@ describe("HttpApi UI fallback", () => {
       const csp = response.headers.get("content-security-policy") ?? ""
       expect(csp).toContain("script-src 'self' 'wasm-unsafe-eval'")
       expect(csp).toContain(`'sha256-${createHash("sha256").update(script).digest("base64")}'`)
-      expect(csp).toContain("connect-src * data:")
+      expect(csp).toContain("connect-src * blob: data:")
     }),
   )
 

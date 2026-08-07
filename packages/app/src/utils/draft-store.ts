@@ -167,8 +167,9 @@ export function createBrowserDraftStore(): DraftStore {
   })
 }
 
-export async function blobDataUrl(blob: BlobReference, mime: string) {
-  const data = await fetch(blob.url).then((response) => response.blob())
+export async function blobDataUrl(blob: BlobReference, mime: string, getBlob?: (id: string) => Promise<Blob | null>) {
+  const persisted = await getBlob?.(blob.id)
+  const data = persisted ? persisted : await fetch(blob.url).then((response) => response.blob())
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader()
     reader.addEventListener("error", () => reject(reader.error))

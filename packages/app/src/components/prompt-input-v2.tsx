@@ -235,6 +235,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
     onAbort: props.onAbort,
     onSubmit: props.onSubmit,
     model: props.controls.model.selection,
+    getBlob: platform.draftStore?.getBlob,
   })
 
   const referenceDescription = (reference: ReferenceInfo) =>
