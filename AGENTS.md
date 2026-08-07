@@ -156,6 +156,7 @@ const table = sqliteTable("session", {
 
 - Prompt attachments use the typed `/api/attachment` control plane and remain private permanent files. Storage defaults to the OpenCode attachment namespace under the public-file-portal root; `PFP_PORTAL_NEW_ROOT` overrides that root without exposing portal credentials to clients.
 - Upload Web blobs and Desktop native sources in 1 MiB chunks. Persist the attachment ID immediately, resume from server status, and treat conflict offsets as authoritative. Do not add an application-level file-size cap.
+- Retry transient status, chunk, and completion requests for an existing attachment, but never replay the initial create request because a lost response could create a duplicate attachment. Keep asynchronous upload updates bound to the prompt where the upload started.
 - Keep incomplete attachments out of prompt submission. After completion, append the server absolute path to the user text and add an authenticated local file part; only PNG, JPEG, GIF, and WebP also become visual data parts. SVG remains an original-format private file, not a provider visual input.
 - Desktop picker authorization is renderer-scoped. Non-image files stay in the main process and are read through bounded chunk IPC; release authorization after completion, cancellation/removal, picker failure, or renderer destruction, while retaining it across retryable upload failures.
 
