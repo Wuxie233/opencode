@@ -23,6 +23,8 @@ import { createPromptSubmissionState } from "./submission-state"
 import { normalizeSessionInfo } from "@/utils/session"
 import { Event } from "@opencode-ai/schema/event"
 import { blobDataUrl } from "@/utils/draft-store"
+import { encodeFilePath } from "@/context/file/path"
+import { visualAttachmentMime } from "@/constants/file-picker"
 
 type PendingPrompt = {
   abort: AbortController
@@ -58,6 +60,12 @@ const draftImages = (prompt: Prompt) => prompt.filter((part): part is ImageAttac
 export async function sendFollowupDraft(input: FollowupSendInput) {
   const text = draftText(input.draft.prompt)
   const images = draftImages(input.draft.prompt)
+  const uploadedFiles = images.map((attachment) => {
+    const upload = attachment.upload
+    if (upload?.status !== "complete" || !upload.path || !upload.filename || !upload.mime)
+      throw new Error(upload?.error ?? `Attachment is not ready: ${attachment.filename}`)
+    return { path: upload.path, filename: upload.filename, mime: upload.mime }
+  })
   const setBusy = () => {
     if (!input.optimisticBusy) return
     input.serverSync.session.set("session_status", input.draft.sessionID, { type: "busy" })
@@ -89,19 +97,17 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
         sessionID: input.draft.sessionID,
         id: messageID,
         command: cmd,
-        arguments: tail.join(" "),
+        arguments: [tail.join(" "), ...uploadedFiles.map((attachment) => attachment.path)].filter(Boolean).join("\n"),
         agent: input.draft.agent,
         model: {
           id: input.draft.model.modelID,
           providerID: input.draft.model.providerID,
           variant: input.draft.variant,
         },
-        files: await Promise.all(
-          images.map(async (attachment) => ({
-            uri: await blobDataUrl(attachment.blob, attachment.mime),
-            name: attachment.filename,
-          })),
-        ),
+        files: uploadedFiles.map((attachment) => ({
+          uri: `file://${encodeFilePath(attachment.path)}`,
+          name: attachment.filename,
+        })),
       })
       return true
     } catch (err) {
@@ -112,10 +118,11 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
 
   const messageID = input.messageID ?? Identifier.ascending("message")
   const encodedImages = await Promise.all(
-    images.map(async (attachment) => ({
-      ...attachment,
-      dataUrl: await blobDataUrl(attachment.blob, attachment.mime),
-    })),
+    images.flatMap((attachment) =>
+      visualAttachmentMime(attachment.mime)
+        ? [blobDataUrl(attachment.blob, attachment.mime).then((dataUrl) => ({ ...attachment, dataUrl }))]
+        : [],
+    ),
   )
   const { requestParts, optimisticParts } = buildRequestParts({
     prompt: input.draft.prompt,
@@ -125,6 +132,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
     sessionID: input.draft.sessionID,
     messageID,
     sessionDirectory: input.draft.sessionDirectory,
+    uploadedFiles,
   })
 
   const message: Message = {
@@ -334,6 +342,15 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       if (input.working()) void abort()
       return
     }
+    const pendingAttachment = images.find((attachment) => attachment.upload?.status !== "complete")
+    if (pendingAttachment) {
+      showToast({
+        variant: "error",
+        title: language.t("common.requestFailed"),
+        description: pendingAttachment.upload?.error ?? `Attachment is not ready: ${pendingAttachment.filename}`,
+      })
+      return
+    }
 
     const modelSelection = input.model ?? local.model
     const currentModel = modelSelection.current()
@@ -522,14 +539,23 @@ export function createPromptSubmit(input: PromptSubmitInput) {
             sessionID: session.id,
             id: messageID,
             command: commandName,
-            arguments: args.join(" "),
+            arguments: [
+              args.join(" "),
+              ...images.flatMap((attachment) => (attachment.upload?.path ? [attachment.upload.path] : [])),
+            ]
+              .filter(Boolean)
+              .join("\n"),
             agent,
             model: { id: model.modelID, providerID: model.providerID, variant },
-            files: await Promise.all(
-              images.map(async (attachment) => ({
-                uri: await blobDataUrl(attachment.blob, attachment.mime),
-                name: attachment.filename,
-              })),
+            files: images.flatMap((attachment) =>
+              attachment.upload?.path
+                ? [
+                    {
+                      uri: `file://${encodeFilePath(attachment.upload.path)}`,
+                      name: attachment.upload.filename ?? attachment.filename,
+                    },
+                  ]
+                : [],
             ),
           })
           .catch((err) => {

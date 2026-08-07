@@ -23,6 +23,7 @@ import { usePermission } from "@/context/permission"
 import { type ImageAttachmentPart, usePrompt } from "@/context/prompt"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
+import { useServerSDK } from "@/context/server-sdk"
 import { useSync } from "@/context/sync"
 import { createSessionTabs } from "@/pages/session/helpers"
 import { showToast } from "@/utils/toast"
@@ -32,6 +33,7 @@ import {
   createPromptInputV2State,
   type PromptInputV2Interaction,
 } from "@opencode-ai/session-ui/v2/prompt-input/interaction"
+import { createAttachmentUploads } from "@/components/prompt-input/attachment-uploads"
 
 export type PromptInputV2ComposerProps = {
   class?: string
@@ -80,6 +82,7 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
 
 export function usePromptInputV2Controller(props: PromptInputV2ControllerProps): PromptInputV2ComposerController {
   const sdk = useSDK()
+  const serverSDK = useServerSDK()
   const sync = useSync()
   const files = useFile()
   const layout = useLayout()
@@ -116,6 +119,18 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
   const attachments = createMemo(() =>
     prompt.current().filter((part): part is ImageAttachmentPart => part.type === "image"),
   )
+  const attachmentUploads = createAttachmentUploads({
+    prompt: prompt.capture,
+    server: serverSDK,
+    readSource: platform.readAttachmentSource,
+    releaseSource: platform.releaseAttachmentSource,
+    onError: (error) =>
+      showToast({
+        variant: "error",
+        title: language.t("common.requestFailed"),
+        description: error instanceof Error ? error.message : String(error),
+      }),
+  })
   const commentCount = createMemo(() => {
     if (mode() === "shell") return 0
     return prompt.context.items().filter((item) => !!item.comment?.trim()).length
@@ -347,7 +362,15 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
       if (item?.commentID) comments.remove(item.path, item.commentID)
     },
     openAttachment: (attachment) =>
-      dialog.show(() => <ImagePreview src={attachment.blob.url} alt={attachment.filename} />),
+      attachment.mime.startsWith("image/")
+        ? dialog.show(() => <ImagePreview src={attachment.blob.url} alt={attachment.filename} />)
+        : attachment.blob.source
+          ? void platform.openPath?.(attachment.blob.source.path)
+          : window.open(attachment.blob.url, "_blank", "noopener,noreferrer"),
+    retryAttachment: attachmentUploads.retry,
+    cancelAttachment: (attachment) => void attachmentUploads.cancel(attachment),
+    downloadAttachment: (attachment) => void attachmentUploads.download(attachment),
+    removeAttachment: attachmentUploads.remove,
     openContext(key) {
       const item = controller.contextItem(key)
       if (item) openComment(item, props, sync, layout, files, comments)
@@ -381,6 +404,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
       readClipboardImage: platform.readClipboardImage,
       getPathForFile: platform.getPathForFile,
       store: platform.draftStore?.putBlob,
+      reference: platform.createAttachmentReference,
     },
     view: {
       placeholder: designPlaceholder,

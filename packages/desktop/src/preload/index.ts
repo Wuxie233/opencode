@@ -93,8 +93,8 @@ const api: ElectronAPI = {
 
   openDirectoryPicker: (opts) => ipcRenderer.invoke("open-directory-picker", opts),
   openFilePicker: (opts) => ipcRenderer.invoke("open-file-picker", opts),
-  readPickedFile: (token, path) => ipcRenderer.invoke("read-picked-file", token, path),
-  releasePickedFiles: (token) => ipcRenderer.invoke("release-picked-files", token),
+  readPickedFile: (token, path, offset, length) => ipcRenderer.invoke("read-picked-file", token, path, offset, length),
+  releasePickedFiles: (token, path) => ipcRenderer.invoke("release-picked-files", token, path),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   saveFilePicker: (opts) => ipcRenderer.invoke("save-file-picker", opts),
   openExternal: (url) => ipcRenderer.send("open-external", url),

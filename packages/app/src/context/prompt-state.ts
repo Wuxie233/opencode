@@ -40,6 +40,18 @@ export interface ImageAttachmentPart {
   sourcePath?: string
   mime: string
   blob: BlobReference
+  upload?: AttachmentUploadState
+}
+
+export type AttachmentUploadState = {
+  status: "pending" | "uploading" | "failed" | "complete"
+  progress: number
+  attachmentID?: string
+  path?: string
+  filename?: string
+  mime?: string
+  size?: number
+  error?: string
 }
 
 export type ContentPart = TextPart | FileAttachmentPart | AgentPart | ImageAttachmentPart

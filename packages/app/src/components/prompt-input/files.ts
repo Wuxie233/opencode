@@ -40,6 +40,7 @@ const IMAGE_EXTS = new Map([
   ["jpeg", "image/jpeg"],
   ["jpg", "image/jpeg"],
   ["png", "image/png"],
+  ["svg", "image/svg+xml"],
   ["webp", "image/webp"],
 ])
 const TEXT_MIMES = new Set([
@@ -93,6 +94,6 @@ export async function attachmentMime(file: File) {
 
   if (textMime(type)) return "text/plain"
   const bytes = new Uint8Array(await file.slice(0, SAMPLE).arrayBuffer())
-  if (!textBytes(bytes)) return
-  return "text/plain"
+  if (textBytes(bytes)) return "text/plain"
+  return type || "application/octet-stream"
 }

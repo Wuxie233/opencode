@@ -5,7 +5,7 @@ import type { DesktopMenuAction } from "../desktop-menu"
 import { ServerConnection } from "./server"
 import type { WslServersPlatform } from "../wsl/types"
 import type { UpdaterPlatform } from "../updater"
-import type { DraftStore } from "@/utils/draft-store"
+import type { BlobReference, DraftStore } from "@/utils/draft-store"
 
 type PickerPaths = string | string[] | null
 type OpenDirectoryPickerOptions = { title?: string; multiple?: boolean }
@@ -58,6 +58,15 @@ type PlatformBase = {
 
   /** Resolve the native source path for a desktop File. */
   getPathForFile?(file: File): string
+
+  /** Resolve a streamable native file reference without copying the full file into the renderer. */
+  createAttachmentReference?(file: File): Promise<BlobReference | undefined>
+  readAttachmentSource?(
+    source: NonNullable<BlobReference["source"]>,
+    offset: number,
+    length: number,
+  ): Promise<ArrayBuffer>
+  releaseAttachmentSource?(source: NonNullable<BlobReference["source"]>): Promise<void>
 
   /** Open a native save file picker dialog (desktop only) */
   saveFilePickerDialog?(opts?: SaveFilePickerOptions): Promise<string | null>

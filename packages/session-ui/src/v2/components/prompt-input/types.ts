@@ -31,7 +31,25 @@ export type PromptInputV2Attachment = {
   filename: string
   sourcePath?: string
   mime: string
-  blob: { id: string; url: string }
+  blob: {
+    id: string
+    url: string
+    source?: {
+      size: number
+      token: string
+      path: string
+    }
+  }
+  upload?: {
+    status: "pending" | "uploading" | "failed" | "complete"
+    progress: number
+    attachmentID?: string
+    path?: string
+    filename?: string
+    mime?: string
+    size?: number
+    error?: string
+  }
 }
 
 export type PromptInputV2Prompt = (

@@ -27,6 +27,7 @@ type BuildRequestPartsInput = {
   messageID: string
   sessionID: string
   sessionDirectory: string
+  uploadedFiles?: { path: string; filename: string; mime: string }[]
 }
 
 const absolute = (directory: string, path: string) => {
@@ -89,12 +90,14 @@ const toOptimisticPart = (part: PromptRequestPart, sessionID: string, messageID:
 }
 
 export function buildRequestParts(input: BuildRequestPartsInput) {
-  const requestParts: PromptRequestPart[] = input.text.trim()
+  const uploadedPaths = (input.uploadedFiles ?? []).map((attachment) => attachment.path)
+  const requestText = [input.text.trim(), ...uploadedPaths].filter(Boolean).join("\n")
+  const requestParts: PromptRequestPart[] = requestText
     ? [
         {
           id: Identifier.ascending("part"),
           type: "text",
-          text: input.text,
+          text: requestText,
         },
       ]
     : []
@@ -204,7 +207,18 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
     } satisfies PromptRequestPart
   })
 
-  requestParts.push(...files, ...context, ...agents, ...images)
+  const uploadedFiles = (input.uploadedFiles ?? []).map((attachment) => {
+    const path = attachment.path
+    return {
+      id: Identifier.ascending("part"),
+      type: "file" as const,
+      mime: attachment.mime,
+      url: `file://${encodeFilePath(path)}`,
+      filename: attachment.filename,
+    } satisfies PromptRequestPart
+  })
+
+  requestParts.push(...files, ...context, ...agents, ...uploadedFiles, ...images)
 
   return {
     requestParts,

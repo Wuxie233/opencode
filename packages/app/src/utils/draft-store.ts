@@ -1,6 +1,14 @@
 import type { AsyncStorage } from "@solid-primitives/storage"
 
-export type BlobReference = { id: string; url: string }
+export type BlobReference = {
+  id: string
+  url: string
+  source?: {
+    size: number
+    token: string
+    path: string
+  }
+}
 
 type Driver = {
   get(key: string): Promise<string | null>
@@ -50,6 +58,7 @@ export function createDraftStore(driver: Driver): DraftStore {
     }
     if ("blob" in item && item.blob && typeof item.blob === "object") {
       const blob = item.blob as Record<string, unknown>
+      if (blob.source) return item
       if (typeof blob.id === "string" && blob.id.startsWith("data:")) {
         const data = await fetch(blob.id).then((response) => response.blob())
         return { ...item, blob: { id: await driver.putBlob(data) } }
@@ -66,6 +75,7 @@ export function createDraftStore(driver: Driver): DraftStore {
     const item = value as Record<string, unknown>
     if (item.blob && typeof item.blob === "object") {
       const ref = item.blob as Record<string, unknown>
+      if (ref.source) return item
       if (typeof ref.id === "string") {
         const blob = await driver.getBlob(ref.id)
         if (blob) return { ...item, blob: { id: ref.id, url: blobUrl(ref.id, blob) } }
@@ -145,7 +155,7 @@ export function createBrowserDraftStore(): DraftStore {
     set: (key, value) => write("documents", key, value),
     remove: (key) => write("documents", key),
     putBlob: async (blob) => {
-      const id = await blobID(blob)
+      const id = crypto.randomUUID()
       await write("blobs", id, blob)
       return id
     },

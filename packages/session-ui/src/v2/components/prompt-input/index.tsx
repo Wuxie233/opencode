@@ -79,7 +79,7 @@ export function PromptInputV2(props: PromptInputV2Props) {
         ref={props.controller.setFileInput}
         type="file"
         multiple
-        accept="image/png,image/jpeg,image/gif,image/webp,application/pdf,text/*,application/json,application/ld+json,application/toml,application/x-toml,application/x-yaml,application/xml,application/yaml,.c,.cc,.cjs,.conf,.cpp,.css,.csv,.cts,.env,.go,.gql,.graphql,.h,.hh,.hpp,.htm,.html,.ini,.java,.js,.json,.jsx,.log,.md,.mdx,.mjs,.mts,.py,.rb,.rs,.sass,.scss,.sh,.sql,.toml,.ts,.tsx,.txt,.xml,.yaml,.yml,.zsh"
+        accept="*/*"
         class="hidden"
         onChange={(event) => {
           const list = event.currentTarget.files
@@ -138,6 +138,9 @@ export function PromptInputV2(props: PromptInputV2Props) {
             removeLabel={i18n.t("ui.promptInput.removeAttachment")}
             onAttachmentClick={props.controller.openAttachment}
             onAttachmentRemove={(attachment) => props.controller.removeAttachment(attachment.id)}
+            onAttachmentRetry={props.controller.retryAttachment}
+            onAttachmentCancel={props.controller.cancelAttachment}
+            onAttachmentDownload={props.controller.downloadAttachment}
             onCommentClick={(comment) => props.controller.toggleContext(comment.key)}
             onCommentRemove={(comment) => props.controller.removeContext(comment.key)}
           />
@@ -382,6 +385,9 @@ export function PromptInputV2Attachments(props: {
   removeLabel: string
   onAttachmentClick?: (attachment: PromptInputV2Attachment) => void
   onAttachmentRemove: (attachment: PromptInputV2Attachment) => void
+  onAttachmentRetry?: (attachment: PromptInputV2Attachment) => void
+  onAttachmentCancel?: (attachment: PromptInputV2Attachment) => void
+  onAttachmentDownload?: (attachment: PromptInputV2Attachment) => void
   onCommentClick?: (comment: PromptInputV2Comment) => void
   onCommentRemove?: (comment: PromptInputV2Comment) => void
 }) {
@@ -413,7 +419,7 @@ export function PromptInputV2Attachments(props: {
                 <button
                   type="button"
                   onClick={() => props.onCommentRemove?.(comment)}
-                  class="absolute -top-1 -end-1 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  class="absolute -top-1 -end-1 z-20 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                   aria-label={props.removeLabel}
                 >
                   <IconV2 name="outline-xmark" class="text-v2-icon-icon-contrast" />
@@ -422,36 +428,69 @@ export function PromptInputV2Attachments(props: {
             )}
           </For>
           <For each={props.attachments}>
-            {(attachment) => (
-              <div class="relative group shrink-0">
-                <TooltipV2 value={attachment.filename} placement="top" contentClass="break-all">
-                  <Show
-                    when={attachment.mime.startsWith("image/")}
-                    fallback={
-                      <AttachmentCardV2 title={attachment.filename}>
-                        {typeLabel(attachment.filename, attachment.mime, i18n.t("ui.common.file"))}
-                      </AttachmentCardV2>
-                    }
-                  >
-                    <img
-                      src={attachment.blob.url}
-                      alt={attachment.filename}
-                      class="w-[58px] h-[46px] rounded-[6px] object-cover"
-                      onClick={() => props.onAttachmentClick?.(attachment)}
-                    />
-                    <div class="absolute inset-0 rounded-[6px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-base)] pointer-events-none" />
+            {(attachment) => {
+              const uploading = attachment.upload?.status === "uploading"
+              return (
+                <div class="relative group shrink-0">
+                  <TooltipV2 value={attachment.filename} placement="top" contentClass="break-all">
+                    <Show
+                      when={attachment.mime.startsWith("image/")}
+                      fallback={
+                        <AttachmentCardV2 title={attachment.filename}>
+                          {typeLabel(attachment.filename, attachment.mime, i18n.t("ui.common.file"))}
+                        </AttachmentCardV2>
+                      }
+                    >
+                      <img
+                        src={attachment.blob.url}
+                        alt={attachment.filename}
+                        class="w-[58px] h-[46px] rounded-[6px] object-cover"
+                        onClick={() => props.onAttachmentClick?.(attachment)}
+                      />
+                      <div class="absolute inset-0 rounded-[6px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-base)] pointer-events-none" />
+                    </Show>
+                  </TooltipV2>
+                  <Show when={attachment.upload?.status === "uploading"}>
+                    <div class="absolute inset-x-1 bottom-1 z-10 h-1 overflow-hidden rounded-full bg-black/30">
+                      <div
+                        class="h-full bg-white"
+                        style={{ width: `${Math.round((attachment.upload?.progress ?? 0) * 100)}%` }}
+                      />
+                    </div>
                   </Show>
-                </TooltipV2>
-                <button
-                  type="button"
-                  onClick={() => props.onAttachmentRemove(attachment)}
-                  class="absolute -top-1 -end-1 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                  aria-label={props.removeLabel}
-                >
-                  <IconV2 name="outline-xmark" class="text-v2-icon-icon-contrast" />
-                </button>
-              </div>
-            )}
+                  <Show when={attachment.upload?.status === "failed"}>
+                    <button
+                      type="button"
+                      onClick={() => props.onAttachmentRetry?.(attachment)}
+                      class="absolute inset-0 z-10 flex items-center justify-center rounded-[6px] bg-black/55 text-white"
+                      aria-label="Retry upload"
+                    >
+                      <Icon name="reset" class="size-4" />
+                    </button>
+                  </Show>
+                  <Show when={attachment.upload?.status === "complete"}>
+                    <button
+                      type="button"
+                      onClick={() => props.onAttachmentDownload?.(attachment)}
+                      class="absolute end-1 bottom-1 z-10 flex size-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                      aria-label="Download attachment"
+                    >
+                      <Icon name="download" class="size-3" />
+                    </button>
+                  </Show>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      uploading ? props.onAttachmentCancel?.(attachment) : props.onAttachmentRemove(attachment)
+                    }
+                    class="absolute -top-1 -end-1 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    aria-label={uploading ? "Cancel upload" : props.removeLabel}
+                  >
+                    <IconV2 name="outline-xmark" class="text-v2-icon-icon-contrast" />
+                  </button>
+                </div>
+              )
+            }}
           </For>
         </div>
         <div

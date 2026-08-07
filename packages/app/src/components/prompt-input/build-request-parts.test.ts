@@ -49,19 +49,16 @@ describe("buildRequestParts", () => {
     expect(result.optimisticParts.every((part) => part.sessionID === "ses_1" && part.messageID === "msg_1")).toBe(true)
   })
 
-  test("keeps multiple uploaded attachments in order", () => {
+  test("injects uploaded paths and keeps private file parts in order", () => {
     const result = buildRequestParts({
       prompt: [{ type: "text", content: "check these", start: 0, end: 11 }],
       context: [],
       images: [
         { type: "image", id: "img_1", filename: "a.png", mime: "image/png", dataUrl: "data:image/png;base64,AAA" },
-        {
-          type: "image",
-          id: "img_2",
-          filename: "b.pdf",
-          mime: "application/pdf",
-          dataUrl: "data:application/pdf;base64,BBB",
-        },
+      ],
+      uploadedFiles: [
+        { path: "/private/a.webp", filename: "a.webp", mime: "image/webp" },
+        { path: "/private/b.pdf", filename: "b.pdf", mime: "application/pdf" },
       ],
       text: "check these",
       messageID: "msg_multi",
@@ -69,10 +66,13 @@ describe("buildRequestParts", () => {
       sessionDirectory: "/repo",
     })
 
-    const files = result.requestParts.filter((part) => part.type === "file" && part.url.startsWith("data:"))
+    const first = result.requestParts[0]
+    expect(first?.type === "text" ? first.text : "").toBe("check these\n/private/a.webp\n/private/b.pdf")
+    const files = result.requestParts.filter((part) => part.type === "file" && part.url.startsWith("file:"))
 
     expect(files).toHaveLength(2)
-    expect(files.map((part) => (part.type === "file" ? part.filename : ""))).toEqual(["a.png", "b.pdf"])
+    expect(files.map((part) => (part.type === "file" ? part.filename : ""))).toEqual(["a.webp", "b.pdf"])
+    expect(result.requestParts.filter((part) => part.type === "file" && part.url.startsWith("data:"))).toHaveLength(1)
   })
 
   test("preserves an external attachment source path for the model", () => {

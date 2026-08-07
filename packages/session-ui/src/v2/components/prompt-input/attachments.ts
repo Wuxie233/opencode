@@ -2,64 +2,6 @@ import { onMount } from "solid-js"
 import { makeEventListener } from "@solid-primitives/event-listener"
 import type { PromptInputV2Attachment, PromptInputV2Prompt } from "./types"
 
-const accepted = [
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "application/pdf",
-  "text/*",
-  "application/json",
-  "application/ld+json",
-  "application/toml",
-  "application/x-toml",
-  "application/x-yaml",
-  "application/xml",
-  "application/yaml",
-  ".c",
-  ".cc",
-  ".cjs",
-  ".conf",
-  ".cpp",
-  ".css",
-  ".csv",
-  ".cts",
-  ".env",
-  ".go",
-  ".gql",
-  ".graphql",
-  ".h",
-  ".hh",
-  ".hpp",
-  ".htm",
-  ".html",
-  ".ini",
-  ".java",
-  ".js",
-  ".json",
-  ".jsx",
-  ".log",
-  ".md",
-  ".mdx",
-  ".mjs",
-  ".mts",
-  ".py",
-  ".rb",
-  ".rs",
-  ".sass",
-  ".scss",
-  ".sh",
-  ".sql",
-  ".toml",
-  ".ts",
-  ".tsx",
-  ".txt",
-  ".xml",
-  ".yaml",
-  ".yml",
-  ".zsh",
-]
-
 type PromptTarget = {
   current: () => PromptInputV2Prompt
   cursor: () => number | undefined
@@ -79,6 +21,7 @@ export type PromptInputV2AttachmentConfig = {
   readClipboardImage?: () => Promise<File | null>
   getPathForFile?: (file: File) => string
   store?: (file: File) => Promise<{ id: string; url: string }>
+  reference?: (file: File) => Promise<PromptInputV2Attachment["blob"] | undefined>
 }
 
 export function createPromptInputV2Attachments(
@@ -103,7 +46,7 @@ export function createPromptInputV2Attachments(
       if (toast) input.warn()
       return false
     }
-    const blob = input.store ? await input.store(file) : await blobReference(file)
+    const blob = (await input.reference?.(file)) ?? (input.store ? await input.store(file) : await blobReference(file))
     const sourcePath = input.getPathForFile?.(file) || undefined
     // Native clipboard images arrive with a fresh timestamped filename on every paste, so identical
     // clipboard content is matched on bytes alone.
@@ -128,6 +71,7 @@ export function createPromptInputV2Attachments(
       sourcePath,
       mime,
       blob,
+      upload: { status: "pending", progress: 0 },
     }
     target.prompt.set([...target.prompt.current(), attachment], target.cursor)
     return true
@@ -213,13 +157,13 @@ export function createPromptInputV2Attachments(
         return
       }
       void input
-        .picker({ defaultPath: input.directory(), multiple: true, accept: accepted }, (file) => add(file))
+        .picker({ defaultPath: input.directory(), multiple: true, accept: ["*/*"] }, (file) => add(file))
         .catch(input.onError)
     },
   }
 }
 
-const imageMimes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
+const imageMimes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"])
 
 async function blobReference(file: File) {
   const id = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await file.arrayBuffer())))
@@ -232,18 +176,9 @@ const imageExtensions = new Map([
   ["jpeg", "image/jpeg"],
   ["jpg", "image/jpeg"],
   ["png", "image/png"],
+  ["svg", "image/svg+xml"],
   ["webp", "image/webp"],
 ])
-const textMimes = new Set([
-  "application/json",
-  "application/ld+json",
-  "application/toml",
-  "application/x-toml",
-  "application/x-yaml",
-  "application/xml",
-  "application/yaml",
-])
-
 async function attachmentMime(file: File) {
   const type = file.type.split(";", 1)[0]?.trim().toLowerCase() ?? ""
   if (imageMimes.has(type) || type === "application/pdf") return type
@@ -251,14 +186,7 @@ async function attachmentMime(file: File) {
   const suffix = index === -1 ? "" : file.name.slice(index + 1).toLowerCase()
   const fallback = imageExtensions.get(suffix) ?? (suffix === "pdf" ? "application/pdf" : undefined)
   if ((!type || type === "application/octet-stream") && fallback) return fallback
-  if (type.startsWith("text/") || textMimes.has(type) || type.endsWith("+json") || type.endsWith("+xml")) {
-    return "text/plain"
-  }
-  const bytes = new Uint8Array(await file.slice(0, 4096).arrayBuffer())
-  if (bytes.some((byte) => byte === 0)) return
-  const control = bytes.filter((byte) => byte < 9 || (byte > 13 && byte < 32)).length
-  if (bytes.length > 0 && control / bytes.length > 0.3) return
-  return "text/plain"
+  return type || "application/octet-stream"
 }
 
 function cursorPosition(editor: HTMLElement) {

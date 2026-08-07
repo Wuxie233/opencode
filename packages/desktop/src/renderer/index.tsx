@@ -165,6 +165,8 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
 
   const wslServersApi = os === "windows" ? window.api.wslServers : undefined
 
+  const pickedAttachments = new WeakMap<File, { token: string; path: string; size: number }>()
+
   return {
     platform: "desktop",
     os,
@@ -186,19 +188,46 @@ const createPlatform = (windowState: DesktopWindowState): Platform => {
         extensions: opts?.extensions ?? ACCEPTED_FILE_EXTENSIONS,
       })
       if (!result) return
-      try {
-        for (const file of result.files) {
-          const selected = new File([await window.api.readPickedFile(result.token, file.path)], file.name)
-          attachmentPaths.set(selected, file.path)
-          await onFile(selected)
+      for (const [index, file] of result.files.entries()) {
+        const image = /[.](gif|jpe?g|png|webp|svg)$/i.test(file.name)
+        const data: ArrayBuffer[] = []
+        if (image) {
+          for (let offset = 0; offset < file.size; offset += 1024 * 1024) {
+            data.push(await window.api.readPickedFile(result.token, file.path, offset, 1024 * 1024))
+          }
         }
-      } finally {
-        await window.api.releasePickedFiles(result.token)
+        const selected = new File(data, file.name, { type: image ? "" : "application/octet-stream" })
+        attachmentPaths.set(selected, file.path)
+        if (!image) pickedAttachments.set(selected, { token: result.token, path: file.path, size: file.size })
+        try {
+          await onFile(selected)
+          if (image) await window.api.releasePickedFiles(result.token, file.path)
+        } catch (error) {
+          await window.api.releasePickedFiles(result.token, file.path)
+          await Promise.all(
+            result.files.slice(index + 1).map((pending) => window.api.releasePickedFiles(result.token, pending.path)),
+          )
+          throw error
+        }
       }
     },
 
     getPathForFile(file) {
       return attachmentPaths.get(file) ?? window.api.getPathForFile(file)
+    },
+
+    async createAttachmentReference(file) {
+      const source = pickedAttachments.get(file)
+      if (!source) return
+      return { id: `native:${source.token}:${source.path}`, url: `native-file:${source.path}`, source }
+    },
+
+    readAttachmentSource(source, offset, length) {
+      return window.api.readPickedFile(source.token, source.path, offset, length)
+    },
+
+    releaseAttachmentSource(source) {
+      return window.api.releasePickedFiles(source.token, source.path)
     },
 
     async saveFilePickerDialog(opts) {

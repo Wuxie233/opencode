@@ -14,7 +14,10 @@ type PromptCommentItem = ContextItem & { key: string }
 type PromptImageAttachmentsProps = {
   attachments: ImageAttachmentPart[]
   onOpen: (attachment: ImageAttachmentPart) => void
-  onRemove: (id: string) => void
+  onRemove: (attachment: ImageAttachmentPart) => void
+  onRetry: (attachment: ImageAttachmentPart) => void
+  onCancel: (attachment: ImageAttachmentPart) => void
+  onDownload: (attachment: ImageAttachmentPart) => void
   removeLabel: string
   fileLabel: string
   newLayoutDesigns: boolean
@@ -32,9 +35,9 @@ const imageClassV2 = "w-[58px] h-[46px] rounded-[6px] object-cover"
 const imageHairlineClassV2 =
   "absolute inset-0 rounded-[6px] shadow-[inset_0_0_0_0.5px_var(--v2-border-border-base)] pointer-events-none"
 const removeClass =
-  "absolute -top-1.5 -right-1.5 size-5 rounded-full bg-surface-raised-stronger-non-alpha border border-border-base flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-raised-base-hover"
+  "absolute -top-1.5 -right-1.5 z-20 size-5 rounded-full bg-surface-raised-stronger-non-alpha border border-border-base flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-surface-raised-base-hover"
 const removeClassV2 =
-  "absolute -top-1 -right-1 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+  "absolute -top-1 -right-1 z-20 size-4 rounded-full bg-v2-icon-icon-muted outline-solid outline-1 outline-v2-icon-icon-contrast flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
 const nameClass = "absolute bottom-0 left-0 right-0 px-1 py-0.5 bg-black/50 rounded-b-md"
 
 export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (props) => {
@@ -113,17 +116,57 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                   <span class="text-10-regular text-white truncate block">{attachment.filename}</span>
                 </div>
               )
-              const remove = () => (
-                <button
-                  type="button"
-                  onClick={() => props.onRemove(attachment.id)}
-                  class={props.newLayoutDesigns ? removeClassV2 : removeClass}
-                  aria-label={props.removeLabel}
-                >
-                  <Show when={props.newLayoutDesigns} fallback={<Icon name="close" class="size-3 text-text-weak" />}>
-                    <IconV2 name="outline-xmark" class="text-v2-icon-icon-contrast" />
-                  </Show>
-                </button>
+              const remove = () => {
+                const uploading = attachment.upload?.status === "uploading"
+                return (
+                  <button
+                    type="button"
+                    onClick={() => (uploading ? props.onCancel(attachment) : props.onRemove(attachment))}
+                    class={props.newLayoutDesigns ? removeClassV2 : removeClass}
+                    aria-label={uploading ? "Cancel upload" : props.removeLabel}
+                  >
+                    <Show
+                      when={props.newLayoutDesigns}
+                      fallback={<Icon name={uploading ? "stop" : "close"} class="size-3 text-text-weak" />}
+                    >
+                      <IconV2 name="outline-xmark" class="text-v2-icon-icon-contrast" />
+                    </Show>
+                  </button>
+                )
+              }
+              const status = () => (
+                <Show when={attachment.upload?.status === "failed"}>
+                  <button
+                    type="button"
+                    onClick={() => props.onRetry(attachment)}
+                    class="absolute inset-0 z-10 flex items-center justify-center rounded-[6px] bg-black/55 text-white"
+                    aria-label="Retry upload"
+                  >
+                    <Icon name="reset" class="size-4" />
+                  </button>
+                </Show>
+              )
+              const download = () => (
+                <Show when={attachment.upload?.status === "complete"}>
+                  <button
+                    type="button"
+                    onClick={() => props.onDownload(attachment)}
+                    class="absolute right-1 bottom-1 z-10 flex size-5 items-center justify-center rounded bg-black/60 text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    aria-label="Download attachment"
+                  >
+                    <Icon name="download" class="size-3" />
+                  </button>
+                </Show>
+              )
+              const progress = () => (
+                <Show when={attachment.upload?.status === "uploading"}>
+                  <div class="absolute inset-x-1 bottom-1 z-10 h-1 overflow-hidden rounded-full bg-black/30">
+                    <div
+                      class="h-full bg-white"
+                      style={{ width: `${Math.round((attachment.upload?.progress ?? 0) * 100)}%` }}
+                    />
+                  </div>
+                </Show>
               )
               // v2 keeps the remove button outside the tooltip trigger so hovering it dismisses the tooltip
               return (
@@ -134,6 +177,9 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                       <div class="relative group">
                         {media()}
                         {name()}
+                        {status()}
+                        {progress()}
+                        {download()}
                         {remove()}
                       </div>
                     </Tooltip>
@@ -142,6 +188,9 @@ export const PromptImageAttachments: Component<PromptImageAttachmentsProps> = (p
                   <div class="relative group shrink-0">
                     <TooltipV2 value={attachment.filename} placement="top" contentClass="break-all">
                       {media()}
+                      {status()}
+                      {progress()}
+                      {download()}
                       <Show when={image}>
                         <div class={imageHairlineClassV2} />
                       </Show>

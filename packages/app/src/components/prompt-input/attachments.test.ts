@@ -18,9 +18,14 @@ describe("attachmentMime", () => {
     expect(await attachmentMime(file)).toBe("text/plain")
   })
 
-  test("rejects binary files", async () => {
+  test("accepts arbitrary binary files", async () => {
     const file = new File([Uint8Array.of(0, 255, 1, 2)], "blob.bin", { type: "application/octet-stream" })
-    expect(await attachmentMime(file)).toBeUndefined()
+    expect(await attachmentMime(file)).toBe("application/octet-stream")
+  })
+
+  test("recognizes SVG from its extension when the browser omits the mime", async () => {
+    const file = new File(["<svg xmlns=\"http://www.w3.org/2000/svg\" />"], "diagram.svg")
+    expect(await attachmentMime(file)).toBe("image/svg+xml")
   })
 })
 

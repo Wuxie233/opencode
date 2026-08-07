@@ -31,6 +31,7 @@ const pickerFilters = (ext?: string[]) => {
 }
 
 const pickedFiles = createPickedFileAuthorizations()
+const pickedFileSenders = new Set<number>()
 
 type Deps = {
   killSidecar: () => Promise<void> | void
@@ -168,6 +169,14 @@ export function registerIpcHandlers(deps: Deps) {
       event: IpcMainInvokeEvent,
       opts?: { multiple?: boolean; title?: string; defaultPath?: string; extensions?: string[] },
     ) => {
+      const senderID = event.sender.id
+      if (!pickedFileSenders.has(senderID)) {
+        pickedFileSenders.add(senderID)
+        event.sender.once("destroyed", () => {
+          pickedFiles.releaseSender(senderID)
+          pickedFileSenders.delete(senderID)
+        })
+      }
       const result = await dialog.showOpenDialog({
         properties: ["openFile", ...(opts?.multiple ? ["multiSelections" as const] : [])],
         title: opts?.title ?? nativeT("desktop.dialog.chooseFile"),
@@ -183,17 +192,20 @@ export function registerIpcHandlers(deps: Deps) {
         })),
       )
       assertAttachmentBudget(files)
-      const token = pickedFiles.add(event.sender.id, result.filePaths)
+      const token = pickedFiles.add(senderID, files)
       return { token, files }
     },
   )
 
-  ipcMain.handle("read-picked-file", async (event: IpcMainInvokeEvent, token: string, filePath: string) => {
-    return pickedFiles.read(event.sender.id, token, filePath)
-  })
+  ipcMain.handle(
+    "read-picked-file",
+    async (event: IpcMainInvokeEvent, token: string, filePath: string, offset: number, length: number) => {
+      return pickedFiles.read(event.sender.id, token, filePath, offset, length)
+    },
+  )
 
-  ipcMain.handle("release-picked-files", (event: IpcMainInvokeEvent, token: string) => {
-    pickedFiles.release(event.sender.id, token)
+  ipcMain.handle("release-picked-files", (event: IpcMainInvokeEvent, token: string, filePath?: string) => {
+    pickedFiles.release(event.sender.id, token, filePath)
   })
 
   ipcMain.handle(

@@ -62,6 +62,10 @@ export function createPromptInputV2Controller(input: {
   context: Accessor<PromptInputV2Suggestion[]>
   searchContextFiles: (query: string) => PromptInputV2Suggestion[] | Promise<PromptInputV2Suggestion[]>
   openAttachment?: (attachment: PromptInputV2Attachment) => void
+  retryAttachment?: (attachment: PromptInputV2Attachment) => void
+  cancelAttachment?: (attachment: PromptInputV2Attachment) => void
+  downloadAttachment?: (attachment: PromptInputV2Attachment) => void
+  removeAttachment?: (attachment: PromptInputV2Attachment) => void
   openContext?: (key: string) => void
   onContextRemove?: (item: PromptInputV2Comment) => void
   onEditor?: (element: HTMLElement) => void
@@ -324,12 +328,28 @@ export function createPromptInputV2Controller(input: {
     openAttachment(attachment: PromptInputV2Attachment) {
       input.openAttachment?.(attachment)
     },
+    retryAttachment(attachment: PromptInputV2Attachment) {
+      input.retryAttachment?.(attachment)
+    },
+    cancelAttachment(attachment: PromptInputV2Attachment) {
+      input.cancelAttachment?.(attachment)
+    },
+    downloadAttachment(attachment: PromptInputV2Attachment) {
+      input.downloadAttachment?.(attachment)
+    },
     removeAttachment(id: string) {
+      const attachment = draft.state.prompt.find(
+        (part): part is PromptInputV2Attachment => part.type === "image" && part.id === id,
+      )
+      if (attachment && input.removeAttachment) return input.removeAttachment(attachment)
       draft.removeAttachment(id)
     },
     canSubmit() {
       const persisted = draft.state
-      if (persisted.prompt.some((part) => part.type === "image")) return true
+      const attachments = persisted.prompt.filter((part): part is PromptInputV2Attachment => part.type === "image")
+      if (attachments.length > 0 && attachments.some((attachment) => attachment.upload?.status !== "complete"))
+        return false
+      if (attachments.length > 0) return true
       if (persisted.context.items.some((item) => !!item.comment?.trim())) return true
       return persisted.prompt.some((part) => "content" in part && !!part.content.trim())
     },

@@ -82,6 +82,8 @@ import { createPromptInputTransientState } from "./prompt-input/transient-state"
 import { showToast } from "@/utils/toast"
 import { ImagePreview } from "@opencode-ai/ui/image-preview"
 import type { ReferenceInfo } from "@opencode-ai/sdk/v2/client"
+import { useServerSDK } from "@/context/server-sdk"
+import { createAttachmentUploads } from "./prompt-input/attachment-uploads"
 
 export { createPromptInputHistory }
 export type { PromptInputControls, PromptInputHistory, PromptInputProps, PromptInputState, PromptInputSubmission }
@@ -116,6 +118,7 @@ const EXAMPLES = [
 
 export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
+  const serverSDK = useServerSDK()
 
   const sync = useSync()
   const files = useFile()
@@ -256,6 +259,18 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   const imageAttachments = createMemo(() =>
     prompt.current().filter((part): part is ImageAttachmentPart => part.type === "image"),
   )
+  const attachmentUploads = createAttachmentUploads({
+    prompt: prompt.capture,
+    server: serverSDK,
+    readSource: platform.readAttachmentSource,
+    releaseSource: platform.releaseAttachmentSource,
+    onError: (error) =>
+      showToast({
+        variant: "error",
+        title: language.t("common.requestFailed"),
+        description: error instanceof Error ? error.message : String(error),
+      }),
+  })
 
   const [store, setStore] = createPromptInputTransientState(
     () => prompt.capture(),
@@ -1160,7 +1175,7 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return true
   }
 
-  const { addAttachment, addAttachments, removeAttachment, handlePaste } = createPromptAttachments({
+  const { addAttachment, addAttachments, handlePaste } = createPromptAttachments({
     prompt,
     editor: () => editorRef,
     isDialogActive: () => !!dialog.active,
@@ -1489,9 +1504,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
         <PromptImageAttachments
           attachments={imageAttachments()}
           onOpen={(attachment) =>
-            dialog.show(() => <ImagePreview src={attachment.blob.url} alt={attachment.filename} />)
+            attachment.mime.startsWith("image/")
+              ? dialog.show(() => <ImagePreview src={attachment.blob.url} alt={attachment.filename} />)
+              : attachment.blob.source
+                ? void platform.openPath?.(attachment.blob.source.path)
+                : window.open(attachment.blob.url, "_blank", "noopener,noreferrer")
           }
-          onRemove={removeAttachment}
+          onRemove={attachmentUploads.remove}
+          onRetry={attachmentUploads.retry}
+          onCancel={(attachment) => void attachmentUploads.cancel(attachment)}
+          onDownload={(attachment) => void attachmentUploads.download(attachment)}
           removeLabel={language.t("prompt.attachment.remove")}
           fileLabel={language.t("ui.common.file")}
           newLayoutDesigns={false}

@@ -152,6 +152,13 @@ const table = sqliteTable("session", {
 
 - After verified OpenCode core changes intended for this host, build an immutable runtime release and atomically stage `/opt/opencode-runtime/bin/opencode` by default so the user's next manual restart loads it. Never restart OpenCode automatically. Skip staging only when the user explicitly requests source-only work or when a build/deployment blocker is reported.
 
+## Private Attachments
+
+- Prompt attachments use the typed `/api/attachment` control plane and remain private permanent files. Storage defaults to the OpenCode attachment namespace under the public-file-portal root; `PFP_PORTAL_NEW_ROOT` overrides that root without exposing portal credentials to clients.
+- Upload Web blobs and Desktop native sources in 1 MiB chunks. Persist the attachment ID immediately, resume from server status, and treat conflict offsets as authoritative. Do not add an application-level file-size cap.
+- Keep incomplete attachments out of prompt submission. After completion, append the server absolute path to the user text and add an authenticated local file part; only PNG, JPEG, GIF, and WebP also become visual data parts. SVG remains an original-format private file, not a provider visual input.
+- Desktop picker authorization is renderer-scoped. Non-image files stay in the main process and are read through bounded chunk IPC; release authorization after completion, cancellation/removal, picker failure, or renderer destruction, while retaining it across retryable upload failures.
+
 ## HTTP Performance Logs
 
 - The server records one privacy-safe `event=http_request` entry for each matched API route when its response is ready. Fields use the normalized route template plus method, status, total milliseconds, and available fixed phase timings; never add concrete URLs, route params, query values, headers, directories, request/response bodies, or session content.

@@ -6,7 +6,7 @@ import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { uuid } from "@/utils/uuid"
 import { getCursorPosition } from "./editor-dom"
-import { createBlobReference, type DraftStore } from "@/utils/draft-store"
+import { createBlobReference, type BlobReference, type DraftStore } from "@/utils/draft-store"
 import { attachmentMime } from "./files"
 import { normalizePaste, pasteMode } from "./paste"
 
@@ -21,6 +21,7 @@ type PromptAttachmentsCoreInput = {
   warn?: () => void
   readClipboardImage?: () => Promise<File | null>
   getPathForFile?: (file: File) => string
+  createAttachmentReference?: (file: File) => Promise<BlobReference | undefined>
   draftStore?: DraftStore
 }
 
@@ -57,7 +58,10 @@ export function createPromptAttachmentsCore(input: PromptAttachmentsCoreInput) {
       filename: file.name,
       sourcePath: input.getPathForFile?.(file) || undefined,
       mime,
-      blob: input.draftStore ? await input.draftStore.putBlob(file) : await createBlobReference(file),
+      blob:
+        (await input.createAttachmentReference?.(file)) ??
+        (input.draftStore ? await input.draftStore.putBlob(file) : await createBlobReference(file)),
+      upload: { status: "pending", progress: 0 },
     }
     target.prompt.set([...target.prompt.current(), attachment], target.cursor)
     return true
@@ -153,6 +157,7 @@ export function createPromptAttachments(input: PromptAttachmentsInput) {
   const attachments = createPromptAttachmentsCore({
     ...input,
     draftStore: platform.draftStore,
+    createAttachmentReference: platform.createAttachmentReference,
     capture: input.prompt.capture,
     warn: () => {
       showToast({
