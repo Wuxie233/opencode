@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import { ConfigProvider, Effect, Layer, Option } from "effect"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
@@ -17,7 +17,7 @@ import { RuntimeFlags } from "../../src/effect/runtime-flags"
 import { ServerAuth } from "../../src/server/auth"
 import { authorizationRouterMiddleware } from "../../src/server/routes/instance/httpapi/middleware/authorization"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
-import { serveEmbeddedUIEffect, serveUIEffect } from "../../src/server/shared/ui"
+import { csp, serveEmbeddedUIEffect, serveUIEffect } from "../../src/server/shared/ui"
 import { testEffect } from "../lib/effect"
 
 const testStateLayer = Layer.effectDiscard(
@@ -42,6 +42,12 @@ const testStateLayer = Layer.effectDiscard(
 
 const fsUtilLayer = AppNodeBuilder.build(FSUtil.node)
 const it = testEffect(Layer.mergeAll(testStateLayer, fsUtilLayer, RuntimeFlags.layer()))
+
+describe("web UI security policy", () => {
+  test("allows browser blob previews", () => {
+    expect(csp()).toContain("img-src 'self' blob: data: https:")
+  })
+})
 
 function authConfigLayer(input?: { password?: string; username?: string }) {
   return ServerAuth.Config.configLayer({

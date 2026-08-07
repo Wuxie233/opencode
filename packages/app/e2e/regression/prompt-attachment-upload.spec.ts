@@ -7,8 +7,30 @@ const directory = "C:/OpenCode/AttachmentUpload"
 const projectID = "proj_attachment_upload"
 const sessionID = "ses_attachment_upload"
 
-async function setup(page: Page) {
+async function seedOrphanDraftBlob(page: Page) {
+  await page.goto("/site.webmanifest")
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("opencode-drafts", 1)
+      request.addEventListener("upgradeneeded", () => {
+        request.result.createObjectStore("documents")
+        request.result.createObjectStore("blobs")
+      })
+      request.addEventListener("success", () => {
+        const transaction = request.result.transaction("blobs", "readwrite")
+        transaction.objectStore("blobs").put(new Blob(["orphan"]), "orphan")
+        transaction.addEventListener("complete", () => resolve())
+        transaction.addEventListener("error", () => reject(transaction.error))
+      })
+      request.addEventListener("error", () => reject(request.error))
+    })
+  })
+}
+
+async function setup(page: Page, input?: { seedOrphanBlob?: boolean }) {
   let patchAttempts = 0
+  const errors: Error[] = []
+  page.on("pageerror", (error) => errors.push(error))
   await mockOpenCodeServer(page, {
     directory,
     project: {
@@ -68,8 +90,9 @@ async function setup(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem("settings.v3", JSON.stringify({ general: { newLayoutDesigns: true } }))
   })
+  if (input?.seedOrphanBlob) await seedOrphanDraftBlob(page)
   await page.goto(`/${base64Encode(directory)}/session/${sessionID}`)
-  return () => patchAttempts
+  return { patchAttempts: () => patchAttempts, errors }
 }
 
 for (const viewport of [
@@ -78,7 +101,7 @@ for (const viewport of [
 ]) {
   test(`uploads and presents an arbitrary attachment on ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
-    const patchAttempts = await setup(page)
+    const result = await setup(page, { seedOrphanBlob: viewport.name === "desktop" })
     const composer = page.locator('[data-component="prompt-input-v2"]')
     await expectAppVisible(composer)
     const dismiss = page.getByRole("button", { name: "Dismiss Tabs information" })
@@ -95,7 +118,8 @@ for (const viewport of [
     await card.hover()
     await expect(composer.getByRole("button", { name: "Download attachment" })).toBeVisible()
     await expect(composer.getByRole("button", { name: "Remove attachment" })).toBeVisible()
-    expect(patchAttempts()).toBe(2)
+    expect(result.patchAttempts()).toBe(2)
+    expect(result.errors).toEqual([])
 
     const composerBox = await composer.boundingBox()
     const cardBox = await card.boundingBox()
@@ -110,7 +134,7 @@ for (const viewport of [
 
 test("keeps image previews working after upload", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 })
-  await setup(page)
+  const result = await setup(page)
   const composer = page.locator('[data-component="prompt-input-v2"]')
   await expectAppVisible(composer)
 
@@ -125,12 +149,13 @@ test("keeps image previews working after upload", async ({ page }) => {
 
   await expect(composer.getByRole("img", { name: "pixel.png" })).toBeVisible()
   await expect(composer.getByRole("button", { name: "Download attachment" })).toBeAttached()
+  expect(result.errors).toEqual([])
 })
 
 test("disables attachment entrance motion when reduced motion is requested", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" })
   await page.setViewportSize({ width: 1280, height: 800 })
-  await setup(page)
+  const result = await setup(page)
   const composer = page.locator('[data-component="prompt-input-v2"]')
   await expectAppVisible(composer)
 
@@ -143,4 +168,11 @@ test("disables attachment entrance motion when reduced motion is requested", asy
   const attachment = composer.locator(".prompt-attachment-enter", { hasText: "reduced.bin" })
   await expect(attachment).toBeVisible()
   await expect(attachment).toHaveCSS("animation-name", "none")
+  expect(result.errors).toEqual([])
+})
+
+test("serves a valid web manifest", async ({ request }) => {
+  const manifest = await request.get(`${process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000"}/site.webmanifest`)
+  expect(manifest.ok()).toBe(true)
+  expect((await manifest.json()).name).toBe("OpenCode")
 })
