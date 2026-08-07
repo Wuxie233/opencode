@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { FilePart } from "@opencode-ai/sdk/v2"
-import { attached, inline, kind, typeLabel } from "./message-file"
+import { attached, inline, kind, typeLabel, uniqueAttachments } from "./message-file"
 
 function file(part: Partial<FilePart> = {}): FilePart {
   return {
@@ -59,5 +59,13 @@ describe("message-file", () => {
     expect(typeLabel("/home/user/my.project/Makefile", "text/plain", "File")).toBe("File")
     expect(typeLabel(".gitignore", "text/plain", "File")).toBe("File")
     expect(typeLabel("/repo/.env", "text/plain", "File")).toBe("File")
+  })
+
+  test("removes identical visual file parts without merging different images", () => {
+    const first = file({ url: "data:image/png;base64,AA==", filename: "capture.png" })
+    const duplicate = file({ url: "data:image/png;base64,AA==", filename: "copy.png" })
+    const different = file({ url: "data:image/png;base64,Ag==", filename: "capture.png" })
+
+    expect(uniqueAttachments([first, duplicate, different])).toEqual([first, different])
   })
 })

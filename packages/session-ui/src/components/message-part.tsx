@@ -63,7 +63,7 @@ import { ToolStatusTitle } from "./tool-status-title"
 import { patchFiles } from "./apply-patch-file"
 import { partDefaultOpen } from "./part-default-open"
 import { animate } from "motion"
-import { attached, inline, kind, typeLabel } from "./message-file"
+import { attached, inline, kind, typeLabel, uniqueAttachments } from "./message-file"
 import { readPartText } from "./message-part-text"
 import { SessionProgressIndicatorV2 } from "../v2/components/session-progress-indicator-v2"
 
@@ -1203,7 +1203,7 @@ export function UserMessageDisplay(props: {
 
   const files = createMemo(() => (props.parts?.filter((p) => p.type === "file") as FilePart[]) ?? [])
 
-  const attachments = createMemo(() => files().filter(attached))
+  const attachments = createMemo(() => uniqueAttachments(files()))
 
   const messageComments = createMemo(() => (newLayout() ? (props.comments ?? []) : []))
 

@@ -6,6 +6,15 @@ export function attached(part: FilePart) {
   return part.url.startsWith("data:") && !inline(part)
 }
 
+export function uniqueAttachments(parts: FilePart[]) {
+  const seen = new Set<string>()
+  return parts.filter((part) => {
+    if (!attached(part) || seen.has(part.url)) return false
+    seen.add(part.url)
+    return true
+  })
+}
+
 export function inline(part: FilePart) {
   return part.source?.text?.start !== undefined && part.source?.text?.end !== undefined
 }
