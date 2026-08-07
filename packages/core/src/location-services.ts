@@ -106,7 +106,7 @@ export function buildLocationServiceMap(
           Layer.provide(LayerNode.compile(location.hoisted)),
         )
       },
-      { idleTimeToLive: "60 minutes" },
+      { idleTimeToLive: "15 minutes" },
     ),
   )
 }

@@ -202,4 +202,5 @@ const table = sqliteTable("session", {
 
 - Use `InstanceStore.acquire(...)` or `InstanceStore.with(...)` for work that depends on directory-scoped state. HTTP streams hold their lease until the body finishes or the client disconnects; background work started by a request must acquire its own lease before the request returns.
 - Idle directory instances are evicted after 15 minutes without leases. Explicit one-shot CLI boundaries still dispose immediately after their command completes.
+- Core V2 Location services are evicted after 15 idle minutes. FFF search starts only on the first search operation, remains borrowed for the full operation, and is released after 10 idle minutes or when its Location closes; initialization failure falls back to ripgrep.
 - Keep `/global/event` backward compatible with `include_sync=true` by default. Web clients must request `include_sync=false`; workspace replication is the consumer that explicitly requests sync envelopes.
