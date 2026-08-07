@@ -8,6 +8,7 @@ const projectID = "proj_attachment_upload"
 const sessionID = "ses_attachment_upload"
 
 async function setup(page: Page) {
+  let patchAttempts = 0
   await mockOpenCodeServer(page, {
     directory,
     project: {
@@ -41,12 +42,14 @@ async function setup(page: Page) {
         contentType: "application/json",
         body: JSON.stringify({ attachmentID: "att_browser", offset: 0, state: "uploading" }),
       })
-    if (request.method() === "PATCH")
+    if (request.method() === "PATCH") {
+      if (patchAttempts++ === 0) return route.abort("failed")
       return route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({ offset: request.postDataBuffer()?.byteLength ?? 0 }),
       })
+    }
     if (request.method() === "POST" && url.pathname.endsWith("/complete"))
       return route.fulfill({
         status: 200,
@@ -66,6 +69,7 @@ async function setup(page: Page) {
     localStorage.setItem("settings.v3", JSON.stringify({ general: { newLayoutDesigns: true } }))
   })
   await page.goto(`/${base64Encode(directory)}/session/${sessionID}`)
+  return () => patchAttempts
 }
 
 for (const viewport of [
@@ -74,7 +78,7 @@ for (const viewport of [
 ]) {
   test(`uploads and presents an arbitrary attachment on ${viewport.name}`, async ({ page }) => {
     await page.setViewportSize(viewport)
-    await setup(page)
+    const patchAttempts = await setup(page)
     const composer = page.locator('[data-component="prompt-input-v2"]')
     await expectAppVisible(composer)
     const dismiss = page.getByRole("button", { name: "Dismiss Tabs information" })
@@ -91,6 +95,7 @@ for (const viewport of [
     await card.hover()
     await expect(composer.getByRole("button", { name: "Download attachment" })).toBeVisible()
     await expect(composer.getByRole("button", { name: "Remove attachment" })).toBeVisible()
+    expect(patchAttempts()).toBe(2)
 
     const composerBox = await composer.boundingBox()
     const cardBox = await card.boundingBox()

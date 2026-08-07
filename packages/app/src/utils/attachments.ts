@@ -38,10 +38,14 @@ export async function uploadPromptAttachment(server: ServerSDK, input: UploadInp
         signal,
       })
     const status = input.attachmentID
-      ? await fetch(new URL(`/api/attachment/${encodeURIComponent(input.attachmentID)}`, server.url), {
-          headers,
+      ? await retryFetch(
+          () =>
+            fetch(new URL(`/api/attachment/${encodeURIComponent(input.attachmentID!)}`, server.url), {
+              headers,
+              signal,
+            }),
           signal,
-        })
+        )
       : undefined
     const response = await (status?.status === 404 ? create() : (status ?? create()))
     const init = await readJson<UploadInfo>(response)
@@ -49,13 +53,14 @@ export async function uploadPromptAttachment(server: ServerSDK, input: UploadInp
     attachmentID = current.attachmentID
     input.onAttachmentID?.(current.attachmentID)
     if (current.state === "complete") {
-      const result = await fetch(
-        new URL(`/api/attachment/${encodeURIComponent(current.attachmentID)}/complete`, server.url),
-        {
-          method: "POST",
-          headers: { ...headers, "content-type": "application/json" } as Record<string, string>,
-          signal,
-        },
+      const result = await retryFetch(
+        () =>
+          fetch(new URL(`/api/attachment/${encodeURIComponent(current.attachmentID)}/complete`, server.url), {
+            method: "POST",
+            headers: { ...headers, "content-type": "application/json" } as Record<string, string>,
+            signal,
+          }),
+        signal,
       ).then(readJson<UploadResult>)
       return { attachmentID: current.attachmentID, ...result }
     }
@@ -70,15 +75,19 @@ export async function uploadPromptAttachment(server: ServerSDK, input: UploadInp
         : await input.blob!.slice(offset, offset + length).arrayBuffer()
       if (chunk.byteLength === 0 && length > 0)
         throw new Error(`Attachment source returned no data at offset ${offset}`)
-      const response = await fetch(new URL(`/api/attachment/${encodeURIComponent(current.attachmentID)}`, server.url), {
-        method: "PATCH",
-        headers: { ...headers, "content-type": "application/octet-stream", "upload-offset": String(offset) } as Record<
-          string,
-          string
-        >,
-        body: chunk,
+      const response = await retryFetch(
+        () =>
+          fetch(new URL(`/api/attachment/${encodeURIComponent(current.attachmentID)}`, server.url), {
+            method: "PATCH",
+            headers: { ...headers, "content-type": "application/octet-stream", "upload-offset": String(offset) } as Record<
+              string,
+              string
+            >,
+            body: chunk,
+            signal,
+          }),
         signal,
-      })
+      )
       if (response.status === 409) {
         const conflict = await response.json()
         const next = conflict && typeof conflict === "object" && "offset" in conflict ? conflict.offset : undefined
@@ -91,13 +100,14 @@ export async function uploadPromptAttachment(server: ServerSDK, input: UploadInp
       input.onProgress?.(size === 0 ? 1 : offset / size)
     }
 
-    const result = await fetch(
-      new URL(`/api/attachment/${encodeURIComponent(current.attachmentID)}/complete`, server.url),
-      {
-        method: "POST",
-        headers: { ...headers, "content-type": "application/json" } as Record<string, string>,
-        signal,
-      },
+    const result = await retryFetch(
+      () =>
+        fetch(new URL(`/api/attachment/${encodeURIComponent(current.attachmentID)}/complete`, server.url), {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" } as Record<string, string>,
+          signal,
+        }),
+      signal,
     ).then(readJson<UploadResult>)
     return { attachmentID: current.attachmentID, ...result }
   } catch (error) {
@@ -124,4 +134,37 @@ export function attachmentServerHeaders(server: ServerConnection.HttpBase): Reco
 async function readJson<T>(response: Response) {
   if (!response.ok) throw new Error(await response.text())
   return (await response.json()) as T
+}
+
+async function retryFetch(request: () => Promise<Response>, signal?: AbortSignal) {
+  const delays = [100, 300]
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const response = await request()
+      if (!retryable(response.status) || attempt === delays.length) return response
+    } catch (error) {
+      if (signal?.aborted || attempt === delays.length) throw error
+    }
+    await wait(delays[attempt], signal)
+  }
+}
+
+function retryable(status: number) {
+  return [408, 425, 429, 500, 502, 503, 504].includes(status)
+}
+
+function wait(delay: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const done = () => {
+      signal?.removeEventListener("abort", abort)
+      resolve()
+    }
+    const timer = setTimeout(done, delay)
+    const abort = () => {
+      clearTimeout(timer)
+      reject(signal?.reason ?? new DOMException("Aborted", "AbortError"))
+    }
+    if (signal?.aborted) return abort()
+    signal?.addEventListener("abort", abort, { once: true })
+  })
 }

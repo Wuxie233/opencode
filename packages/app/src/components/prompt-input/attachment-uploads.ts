@@ -24,8 +24,11 @@ export function createAttachmentUploads(input: {
 }) {
   const active = new Map<string, AbortController>()
 
-  const update = (id: string, change: Partial<NonNullable<ImageAttachmentPart["upload"]>>) => {
-    const prompt = input.prompt()
+  const update = (
+    prompt: PromptTarget,
+    id: string,
+    change: Partial<NonNullable<ImageAttachmentPart["upload"]>>,
+  ) => {
     prompt.set(
       prompt.current().map((part) => {
         if (part.type !== "image" || part.id !== id) return part
@@ -35,11 +38,11 @@ export function createAttachmentUploads(input: {
     )
   }
 
-  const start = async (attachment: ImageAttachmentPart) => {
+  const start = async (attachment: ImageAttachmentPart, prompt = input.prompt()) => {
     if (active.has(attachment.id) || attachment.upload?.status === "complete") return
     const controller = new AbortController()
     active.set(attachment.id, controller)
-    update(attachment.id, { status: "uploading", error: undefined })
+    update(prompt, attachment.id, { status: "uploading", error: undefined })
     try {
       const blob = attachment.blob.source
         ? undefined
@@ -60,16 +63,16 @@ export function createAttachmentUploads(input: {
                 }
               : undefined,
           attachmentID: attachment.upload?.attachmentID,
-          onAttachmentID: (attachmentID) => update(attachment.id, { attachmentID }),
-          onProgress: (progress) => update(attachment.id, { status: "uploading", progress }),
+          onAttachmentID: (attachmentID) => update(prompt, attachment.id, { attachmentID }),
+          onProgress: (progress) => update(prompt, attachment.id, { status: "uploading", progress }),
         },
         controller.signal,
       )
-      update(attachment.id, { status: "complete", progress: 1, ...result })
+      update(prompt, attachment.id, { status: "complete", progress: 1, ...result })
       if (attachment.blob.source) await input.releaseSource?.(attachment.blob.source)
     } catch (error) {
       if (controller.signal.aborted) return
-      update(attachment.id, {
+      update(prompt, attachment.id, {
         status: "failed",
         attachmentID: error instanceof AttachmentUploadError ? error.attachmentID : attachment.upload?.attachmentID,
         error: error instanceof Error ? error.message : String(error),
@@ -81,15 +84,15 @@ export function createAttachmentUploads(input: {
   }
 
   const retry = (attachment: ImageAttachmentPart) => {
-    update(attachment.id, { status: "pending", error: undefined })
+    const prompt = input.prompt()
+    update(prompt, attachment.id, { status: "pending", error: undefined })
     void start({
       ...attachment,
       upload: { ...attachment.upload, status: "pending", progress: attachment.upload?.progress ?? 0 },
-    })
+    }, prompt)
   }
 
-  const discard = (id: string) => {
-    const prompt = input.prompt()
+  const discard = (prompt: PromptTarget, id: string) => {
     prompt.set(
       prompt.current().filter((part) => part.type !== "image" || part.id !== id),
       prompt.cursor(),
@@ -97,10 +100,11 @@ export function createAttachmentUploads(input: {
   }
 
   const cancel = async (attachment: ImageAttachmentPart) => {
+    const prompt = input.prompt()
     active.get(attachment.id)?.abort()
     active.delete(attachment.id)
     const attachmentID = attachment.upload?.attachmentID
-    discard(attachment.id)
+    discard(prompt, attachment.id)
     const results = await Promise.allSettled([
       attachmentID ? cancelPromptAttachment(input.server(), attachmentID) : Promise.resolve(),
       attachment.blob.source ? (input.releaseSource?.(attachment.blob.source) ?? Promise.resolve()) : Promise.resolve(),
@@ -115,7 +119,7 @@ export function createAttachmentUploads(input: {
       return
     }
     if (attachment.blob.source) void input.releaseSource?.(attachment.blob.source).catch(() => undefined)
-    discard(attachment.id)
+    discard(input.prompt(), attachment.id)
   }
 
   const download = async (attachment: ImageAttachmentPart) => {
@@ -141,9 +145,10 @@ export function createAttachmentUploads(input: {
   }
 
   createEffect(() => {
-    for (const part of input.prompt().current()) {
+    const prompt = input.prompt()
+    for (const part of prompt.current()) {
       if (part.type !== "image") continue
-      if (!part.upload || part.upload.status === "pending" || part.upload.status === "uploading") void start(part)
+      if (!part.upload || part.upload.status === "pending" || part.upload.status === "uploading") void start(part, prompt)
     }
   })
 

@@ -179,6 +179,68 @@ describe("uploadPromptAttachment", () => {
     expect(error.attachmentID).toBe("att_failed")
   })
 
+  test("resumes a chunk after a transient network failure", async () => {
+    const methods: string[] = []
+    const offsets: string[] = []
+    let patchAttempts = 0
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        methods.push(request.method)
+        if (request.method === "POST" && request.url.endsWith("/api/attachment"))
+          return Response.json({ attachmentID: "att_retryable", offset: 0, state: "uploading" })
+        if (request.method === "PATCH") {
+          offsets.push(request.headers.get("upload-offset") ?? "")
+          patchAttempts += 1
+          if (patchAttempts === 1) throw new TypeError("Failed to fetch")
+          return Response.json({ offset: (await request.arrayBuffer()).byteLength })
+        }
+        if (request.method === "GET")
+          return Response.json({ attachmentID: "att_retryable", offset: 0, state: "uploading" })
+        return Response.json({
+          path: "/files/retryable.bin",
+          filename: "retryable.bin",
+          mime: "application/octet-stream",
+          size: 1,
+        })
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+
+    await uploadPromptAttachment(server, {
+      name: "retryable.bin",
+      mime: "application/octet-stream",
+      blob: new Blob([Uint8Array.of(1)]),
+    })
+
+    expect(methods).toEqual(["POST", "PATCH", "PATCH", "POST"])
+    expect(offsets).toEqual(["0", "0"])
+  })
+
+  test("does not create duplicate attachments when initialization fails", async () => {
+    let creates = 0
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        if (request.method === "POST" && request.url.endsWith("/api/attachment")) {
+          creates += 1
+          throw new TypeError("Failed to fetch")
+        }
+        return Response.json({})
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+
+    const error = await uploadPromptAttachment(server, {
+      name: "lost-init.bin",
+      mime: "application/octet-stream",
+      blob: new Blob([Uint8Array.of(1)]),
+    }).catch((cause) => cause)
+
+    expect(error).toBeInstanceOf(AttachmentUploadError)
+    expect(creates).toBe(1)
+  })
+
   test("cancels an unfinished upload", async () => {
     const methods: string[] = []
     globalThis.fetch = Object.assign(

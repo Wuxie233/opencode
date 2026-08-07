@@ -189,7 +189,7 @@ describe("createAttachmentUploads", () => {
         const request = new Request(input, init)
         if (request.method === "POST")
           return Response.json({ attachmentID: "att_retry", offset: 0, state: "uploading" })
-        throw new Error("network lost")
+        return new Response("upload rejected", { status: 400 })
       },
       { preconnect: originalFetch.preconnect },
     )
@@ -276,5 +276,71 @@ describe("createAttachmentUploads", () => {
         })
       }),
     )
+  })
+
+  test("finishes an upload in the prompt where it started", async () => {
+    const patch = Promise.withResolvers<void>()
+    const patchStarted = Promise.withResolvers<void>()
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        if (request.method === "POST" && request.url.endsWith("/api/attachment"))
+          return Response.json({ attachmentID: "att_session", offset: 0, state: "uploading" })
+        if (request.method === "PATCH") {
+          patchStarted.resolve()
+          await patch.promise
+          return Response.json({ offset: 1 })
+        }
+        return Response.json({
+          path: "/private/session.bin",
+          filename: "session.bin",
+          mime: "application/octet-stream",
+          size: 1,
+        })
+      },
+      { preconnect: originalFetch.preconnect },
+    )
+    const initial: PromptStore = {
+      prompt: [
+        {
+          type: "image",
+          id: "session_1",
+          filename: "session.bin",
+          mime: "application/octet-stream",
+          blob: { id: "blob_session", url: "blob:session" },
+          upload: { status: "pending", progress: 0 },
+        },
+      ],
+      context: { items: [] },
+    }
+    const [first, setFirst] = createStore<PromptStore>(structuredClone(initial))
+    const [second, setSecond] = createStore<PromptStore>({ prompt: [], context: { items: [] } })
+    let current = { store: first, set: setFirst }
+
+    const root = createRoot((dispose) => {
+      const uploads = createAttachmentUploads({
+        prompt: () => {
+          const target = current
+          return {
+            current: () => target.store.prompt,
+            cursor: () => 0,
+            set: (prompt) => target.set("prompt", prompt),
+          }
+        },
+        server: () => server,
+        getBlob: async () => new Blob([Uint8Array.of(1)]),
+      })
+      return { dispose, uploads }
+    })
+    const attachment = first.prompt[0]
+    if (attachment?.type === "image") root.uploads.retry(attachment)
+    await patchStarted.promise
+    current = { store: second, set: setSecond }
+    patch.resolve()
+    await wait()
+    await wait()
+    expect(first.prompt[0]?.type === "image" ? first.prompt[0].upload?.status : undefined).toBe("complete")
+    expect(second.prompt).toEqual([])
+    root.dispose()
   })
 })
