@@ -99,6 +99,41 @@ describe("buildRequestParts", () => {
     expect(result.requestParts.find((part) => part.type === "file")?.url).toBe("file:///private/a.webp")
   })
 
+  test("keeps unsupported binary uploads as paths instead of file parts", () => {
+    const result = buildRequestParts({
+      prompt: [],
+      context: [],
+      images: [],
+      uploadedFiles: [
+        { id: "archive", path: "/private/archive.bin", filename: "archive.bin", mime: "application/octet-stream" },
+      ],
+      text: "inspect this",
+      messageID: "msg_binary",
+      sessionID: "ses_binary",
+      sessionDirectory: "/repo",
+    })
+
+    expect(result.requestParts).toEqual([
+      expect.objectContaining({ type: "text", text: "inspect this\n/private/archive.bin" }),
+    ])
+  })
+
+  test("keeps supported document uploads as file parts", () => {
+    const result = buildRequestParts({
+      prompt: [],
+      context: [],
+      images: [],
+      uploadedFiles: [{ path: "/private/report.pdf", filename: "report.pdf", mime: "application/pdf" }],
+      text: "summarize this",
+      messageID: "msg_pdf",
+      sessionID: "ses_pdf",
+      sessionDirectory: "/repo",
+    })
+
+    expect(result.requestParts.filter((part) => part.type === "file")).toHaveLength(1)
+    expect(result.requestParts.find((part) => part.type === "file")?.url).toBe("file:///private/report.pdf")
+  })
+
   test("preserves an external attachment source path for the model", () => {
     const result = buildRequestParts({
       prompt: [],

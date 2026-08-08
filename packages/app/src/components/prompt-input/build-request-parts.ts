@@ -3,6 +3,7 @@ import { type AgentPartInput, type FilePartInput, type Part, type TextPartInput 
 import type { FileSelection } from "@/context/file"
 import { encodeFilePath } from "@/context/file/path"
 import type { AgentPart, FileAttachmentPart, ImageAttachmentPart, Prompt } from "@/context/prompt"
+import { visualAttachmentMime } from "@/constants/file-picker"
 import { Identifier } from "@/utils/id"
 import { createCommentMetadata, formatCommentNote } from "@/utils/comment-note"
 
@@ -52,6 +53,8 @@ const parseCommentMentions = (comment: string) => {
 
 const isFileAttachment = (part: Prompt[number]): part is FileAttachmentPart => part.type === "file"
 const isAgentAttachment = (part: Prompt[number]): part is AgentPart => part.type === "agent"
+const nativeAttachmentMime = (mime: string) =>
+  mime === "text/plain" || mime === "application/pdf" || visualAttachmentMime(mime)
 
 const toOptimisticPart = (part: PromptRequestPart, sessionID: string, messageID: string): Part => {
   if (part.type === "text") {
@@ -212,16 +215,19 @@ export function buildRequestParts(input: BuildRequestPartsInput) {
       } satisfies PromptRequestPart
     })
 
-  const uploadedFiles = (input.uploadedFiles ?? []).map((attachment) => {
-    const path = attachment.path
-    return {
-      id: Identifier.ascending("part"),
-      type: "file" as const,
-      mime: attachment.mime,
-      url: `file://${encodeFilePath(path)}`,
-      filename: attachment.filename,
-    } satisfies PromptRequestPart
-  })
+  const uploadedFiles = (input.uploadedFiles ?? [])
+    // Unknown binary files stay in the path text so the Agent can read them with a tool.
+    .filter((attachment) => nativeAttachmentMime(attachment.mime))
+    .map((attachment) => {
+      const path = attachment.path
+      return {
+        id: Identifier.ascending("part"),
+        type: "file" as const,
+        mime: attachment.mime,
+        url: `file://${encodeFilePath(path)}`,
+        filename: attachment.filename,
+      } satisfies PromptRequestPart
+    })
 
   requestParts.push(...files, ...context, ...agents, ...uploadedFiles, ...images)
 
