@@ -71,6 +71,54 @@ describe("InstanceStore", () => {
     }),
   )
 
+  it.live("loads instance context without waiting for full bootstrap", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+
+      yield* setBootstrap(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(release)
+        }),
+      )
+
+      const fullLoad = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Deferred.await(started)
+
+      const ctx = yield* store.loadContext({ directory: dir })
+      expect(ctx.directory).toBe(dir)
+
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(fullLoad)
+    }),
+  )
+
+  it.live("disposes instance context without waiting for full bootstrap", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+
+      yield* setBootstrap(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(release)
+        }),
+      )
+
+      const ctx = yield* store.loadContext({ directory: dir })
+      yield* Deferred.await(started)
+      yield* store.dispose(ctx)
+
+      expect(ProcessPressure.snapshot().liveInstances).toBe(0)
+      yield* Deferred.succeed(release, undefined)
+    }),
+  )
+
   it.live("caches loaded instance context by directory", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })

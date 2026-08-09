@@ -99,6 +99,52 @@ describe("bootstrapDirectory", () => {
     expect(mcpReads).toEqual([])
   })
 
+  test("marks a directory complete before deferred bootstrap work finishes", async () => {
+    const [store, setStore] = directoryState()
+    const agents = Promise.withResolvers<never>()
+    let sessionReads = 0
+
+    await bootstrapDirectory({
+      directory: "/project",
+      scope: ServerScope.local,
+      mcp: false,
+      global: {
+        config: {} satisfies Config,
+        path: { state: "", config: "", worktree: "/project", directory: "/project", home: "/home" },
+        project: [{ id: "project", worktree: "/project" } as Project],
+        provider,
+      },
+      sdk: {
+        app: { agents: () => agents.promise },
+        config: { get: async () => ({ data: {} }) },
+        session: { status: async () => ({ data: {} }) },
+        vcs: { get: async () => ({ data: undefined }) },
+        command: { list: async () => ({ data: [] }) },
+        permission: { list: async () => ({ data: [] }) },
+        question: { list: async () => ({ data: [] }) },
+        v2: { reference: { list: async () => ({ data: { data: [] } }) } },
+        mcp: { status: async () => ({ data: {} }) },
+        provider: { list: async () => ({ data: { all: [], connected: [], default: {} } }) },
+      } as unknown as OpencodeClient,
+      store,
+      setStore,
+      vcsCache: { setStore() {} } as unknown as VcsCache,
+      loadSessions() {
+        sessionReads += 1
+      },
+      translate: (key) => key,
+      queryClient: new QueryClient(),
+    })
+
+    const deadline = Date.now() + 500
+    while (store.status !== "complete" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+
+    expect(store.status).toBe("complete")
+    expect(sessionReads).toBe(1)
+  })
+
   test("seeds session status even while warming session info stalls", async () => {
     const [store, setStore] = directoryState()
     const stalled = Promise.withResolvers<never>()

@@ -30,7 +30,9 @@ function provideInstanceContext<E>(
   return Effect.gen(function* () {
     const route = yield* WorkspaceRouteContext
     const scope = yield* Scope.make()
-    const ctx = yield* store.load({ directory: decode(route.directory) }).pipe(Scope.provide(scope))
+    const ctx = yield* store.loadContext({ directory: decode(route.directory), workspaceID: route.workspaceID }).pipe(
+      Scope.provide(scope),
+    )
     const response = yield* effect.pipe(
       Effect.provideService(InstanceRef, ctx),
       Effect.provideService(WorkspaceRef, route.workspaceID),

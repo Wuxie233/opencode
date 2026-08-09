@@ -252,12 +252,8 @@ export async function bootstrapDirectory(input: {
   const rev = (providerRev.get(revKey) ?? 0) + 1
   providerRev.set(revKey, rev)
   ;(async () => {
-    const slow = [
+    const critical = [
       () => Promise.resolve(input.loadSessions(input.directory)),
-      () =>
-        input.queryClient
-          .ensureQueryData(loadAgentsQuery(input.scope, input.directory, input.sdk))
-          .then((data) => input.setStore("agent", data)),
       () =>
         retry(() => input.sdk.config.get().then((x) => input.setStore("config", reconcile(x.data!, { merge: false })))),
       () =>
@@ -296,6 +292,13 @@ export async function bootstrapDirectory(input: {
             const next = projectID(data.directory ?? input.directory, input.global.project)
             if (next) input.setStore("project", next)
           })),
+    ].filter(Boolean) as (() => Promise<any>)[]
+
+    const deferred = [
+      () =>
+        input.queryClient
+          .ensureQueryData(loadAgentsQuery(input.scope, input.directory, input.sdk))
+          .then((data) => input.setStore("agent", data)),
       () =>
         retry(() =>
           input.sdk.vcs.get().then((x) => {
@@ -366,7 +369,6 @@ export async function bootstrapDirectory(input: {
             )
           }),
         ),
-      () => Promise.resolve(input.loadSessions(input.directory)),
       input.mcp && (() => input.queryClient.fetchQuery(loadMcpQuery(input.scope, input.directory, input.sdk))),
       input.mcp && (() => input.queryClient.fetchQuery(loadMcpResourcesQuery(input.scope, input.directory, input.sdk))),
       () =>
@@ -381,17 +383,22 @@ export async function bootstrapDirectory(input: {
     ].filter(Boolean) as (() => Promise<any>)[]
 
     await waitForPaint()
-    const slowErrs = errors(await runAll(slow))
-    if (slowErrs.length > 0) {
-      console.error("Failed to finish bootstrap instance", slowErrs[0])
+    const criticalErrs = errors(await runAll(critical))
+    if (criticalErrs.length > 0) {
+      console.error("Failed to bootstrap instance", criticalErrs[0])
       const project = getFilename(input.directory)
       showToast({
         variant: "error",
         title: input.translate("toast.project.reloadFailed.title", { project }),
-        description: formatServerError(slowErrs[0], input.translate),
+        description: formatServerError(criticalErrs[0], input.translate),
       })
     }
 
-    if (loading && slowErrs.length === 0) input.setStore("status", "complete")
+    if (loading && criticalErrs.length === 0) input.setStore("status", "complete")
+
+    void runAll(deferred).then((results) => {
+      const deferredErrs = errors(results)
+      if (deferredErrs.length > 0) console.error("Failed to finish deferred instance bootstrap", deferredErrs[0])
+    })
   })()
 }
