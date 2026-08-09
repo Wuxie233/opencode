@@ -22,6 +22,12 @@ function decode(input: string): string {
   }
 }
 
+const earlyContextPaths = new Set(["/path", "/project/current", "/session", "/session/status"])
+
+export function usesEarlyInstanceContext(method: string, url: string): boolean {
+  return method === "GET" && earlyContextPaths.has(new URL(url, "http://localhost").pathname)
+}
+
 function provideInstanceContext<E>(
   effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E>,
   store: InstanceStore.Interface,
@@ -32,7 +38,10 @@ function provideInstanceContext<E>(
 > {
   return Effect.gen(function* () {
     const route = yield* WorkspaceRouteContext
-    const lease = yield* store.acquire({ directory: decode(route.directory) })
+    const request = yield* HttpServerRequest.HttpServerRequest
+    const lease = yield* (usesEarlyInstanceContext(request.method, request.url) ? store.acquireContext : store.acquire)(
+      { directory: decode(route.directory) },
+    )
     const response = yield* effect.pipe(
       Effect.provideService(InstanceRef, lease.context),
       Effect.provideService(WorkspaceRef, route.workspaceID),
@@ -42,7 +51,6 @@ function provideInstanceContext<E>(
       yield* lease.release
       return response
     }
-    const request = yield* HttpServerRequest.HttpServerRequest
     if (request.source instanceof IncomingMessage) {
       const incoming = request.source
       const bridge = yield* EffectBridge.make()

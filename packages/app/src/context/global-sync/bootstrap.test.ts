@@ -181,6 +181,46 @@ describe("bootstrapDirectory", () => {
 
     expect(store.status).toBe("complete")
   })
+
+  test("marks a directory complete before deferred bootstrap work finishes", async () => {
+    const [store, setStore] = directoryState()
+    const agents = Promise.withResolvers<never>()
+    let sessionReads = 0
+
+    await bootstrapDirectory({
+      directory: "/project",
+      scope: ServerScope.local,
+      mcp: false,
+      global: {
+        config: {} satisfies Config,
+        path: { state: "", config: "", worktree: "/project", directory: "/project", home: "/home" },
+        project: [{ id: "project", worktree: "/project" } as Project],
+        provider,
+      },
+      sdk: {} as OpencodeClient,
+      api: {
+        ...api,
+        agent: { list: () => agents.promise },
+      },
+      store,
+      setStore,
+      vcsCache: { setStore() {} } as unknown as VcsCache,
+      loadSessions() {
+        sessionReads += 1
+      },
+      translate: (key) => key,
+      queryClient: new QueryClient(),
+      protocol: Promise.resolve("v2"),
+    })
+
+    const deadline = Date.now() + 500
+    while (store.status !== "complete" && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+
+    expect(store.status).toBe("complete")
+    expect(sessionReads).toBe(1)
+  })
 })
 
 describe("config queries", () => {

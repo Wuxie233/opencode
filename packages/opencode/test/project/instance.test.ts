@@ -68,6 +68,57 @@ describe("InstanceStore", () => {
     }),
   )
 
+  it.live("loads instance context without waiting for full bootstrap", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+
+      yield* setBootstrap(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(release)
+        }),
+      )
+
+      const fullLoad = yield* store.load({ directory: dir }).pipe(Effect.forkScoped)
+      yield* Deferred.await(started)
+
+      const lease = yield* store.acquireContext({ directory: dir })
+      expect(lease.context.directory).toBe(dir)
+      yield* lease.release
+
+      yield* Deferred.succeed(release, undefined)
+      yield* Fiber.join(fullLoad)
+    }),
+  )
+
+  it.live("disposes instance context without waiting for full bootstrap", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const store = yield* InstanceStore.Service
+      const started = yield* Deferred.make<void>()
+      const release = yield* Deferred.make<void>()
+      const disposed: string[] = []
+      yield* registerDisposerScoped(async (directory) => void disposed.push(directory))
+
+      yield* setBootstrap(
+        Effect.gen(function* () {
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(release)
+        }),
+      )
+
+      const lease = yield* store.acquireContext({ directory: dir })
+      yield* Deferred.await(started)
+      yield* lease.release
+      yield* store.dispose(lease.context)
+
+      expect(disposed).toEqual([dir])
+    }),
+  )
+
   it.live("caches loaded instance context by directory", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })

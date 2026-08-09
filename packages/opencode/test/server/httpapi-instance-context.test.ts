@@ -1,5 +1,5 @@
 import { NodeHttpServer, NodeServices } from "@effect/platform-node"
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Effect, Fiber, Layer, Schema } from "effect"
 import { HttpClient, HttpClientRequest, HttpRouter } from "effect/unstable/http"
 import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi"
@@ -17,6 +17,7 @@ import { disposeMiddleware, markInstanceForDisposal } from "../../src/server/rou
 import {
   InstanceContextMiddleware,
   instanceContextLayer,
+  usesEarlyInstanceContext,
 } from "../../src/server/routes/instance/httpapi/middleware/instance-context"
 import {
   WorkspaceRoutingMiddleware,
@@ -143,6 +144,17 @@ const serveDisposeProbe = () =>
   )
 
 describe("HttpApi instance context middleware", () => {
+  test("uses early context only for critical read routes", () => {
+    expect(usesEarlyInstanceContext("GET", "/path?directory=%2Ftmp%2Frepo")).toBe(true)
+    expect(usesEarlyInstanceContext("GET", "/project/current")).toBe(true)
+    expect(usesEarlyInstanceContext("GET", "/session?limit=100")).toBe(true)
+    expect(usesEarlyInstanceContext("GET", "/session/status")).toBe(true)
+    expect(usesEarlyInstanceContext("GET", "/command")).toBe(false)
+    expect(usesEarlyInstanceContext("GET", "/config")).toBe(false)
+    expect(usesEarlyInstanceContext("POST", "/session")).toBe(false)
+    expect(usesEarlyInstanceContext("GET", "/session/status/extra")).toBe(false)
+  })
+
   it.live("provides instance context from the routed directory", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
