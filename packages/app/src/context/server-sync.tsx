@@ -59,6 +59,7 @@ import type {
 } from "@opencode-ai/client/promise"
 import { toggleMcp } from "./global-sync/mcp"
 import { createServerSession, type ServerSession } from "./server-session"
+import { QUERY_CACHE_WINDOW_MS } from "./query-cache"
 
 type GlobalStore = {
   ready: boolean
@@ -126,6 +127,7 @@ export const loadMcpResourcesQuery = (
     readonly [ServerScope, string, "mcpResources"]
   >({
     queryKey: [scope, directory, "mcpResources"] as const,
+    staleTime: QUERY_CACHE_WINDOW_MS,
     queryFn: async () => {
       if ((await protocol) === "v1" && legacy) {
         return Object.fromEntries(

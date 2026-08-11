@@ -1,0 +1,1 @@
+export const QUERY_CACHE_WINDOW_MS = 30_000

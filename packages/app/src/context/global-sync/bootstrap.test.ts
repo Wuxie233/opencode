@@ -17,6 +17,7 @@ import {
 import type { State, VcsCache } from "./types"
 import { ServerScope } from "@/utils/server-scope"
 import type { ServerApi } from "@/utils/server"
+import { QUERY_CACHE_WINDOW_MS } from "../query-cache"
 
 type ProjectApi = ServerApi["project"]
 
@@ -266,6 +267,50 @@ describe("config queries", () => {
 })
 
 describe("query keys", () => {
+  test("uses a bounded cache window for reusable catalog queries", () => {
+    const client = {} as Parameters<typeof loadPathQuery>[2]
+    const api = {} as CatalogApi
+
+    expect(loadGlobalConfigQuery(ServerScope.local, client).staleTime).toBe(QUERY_CACHE_WINDOW_MS)
+    expect(loadProjectsQuery(ServerScope.local, {} as Parameters<typeof loadProjectsQuery>[1]).staleTime).toBe(
+      QUERY_CACHE_WINDOW_MS,
+    )
+    expect(loadProvidersQuery(ServerScope.local, "/repo", api).staleTime).toBe(QUERY_CACHE_WINDOW_MS)
+    expect(loadAgentsQuery(ServerScope.local, "/repo", {} as Parameters<typeof loadAgentsQuery>[2]).staleTime).toBe(
+      QUERY_CACHE_WINDOW_MS,
+    )
+    expect(loadPathQuery(ServerScope.local, "/repo", client).staleTime).toBe(QUERY_CACHE_WINDOW_MS)
+    expect(
+      loadReferencesQuery(ServerScope.local, "/repo", {} as Parameters<typeof loadReferencesQuery>[2]).staleTime,
+    ).toBe(QUERY_CACHE_WINDOW_MS)
+  })
+
+  test("reuses a successful result until explicit invalidation", async () => {
+    let calls = 0
+    const queryClient = new QueryClient()
+    const api = {
+      provider: {
+        list: async () => {
+          calls++
+          return { location: {}, data: [] }
+        },
+      },
+      model: {
+        list: async () => ({ location: {}, data: [] }),
+        default: async () => ({ location: {}, data: null }),
+      },
+    } as unknown as CatalogApi
+    const options = loadProvidersQuery(ServerScope.local, "/repo", api)
+
+    await queryClient.fetchQuery(options)
+    await queryClient.fetchQuery(options)
+    expect(calls).toBe(1)
+
+    await queryClient.invalidateQueries(options)
+    await queryClient.fetchQuery(options)
+    expect(calls).toBe(2)
+  })
+
   test("partitions identical directories by server scope", () => {
     const client = {} as Parameters<typeof loadPathQuery>[2]
     const api = {} as CatalogApi

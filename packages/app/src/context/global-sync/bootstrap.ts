@@ -45,6 +45,7 @@ import { ScopedKey, type ServerScope } from "@/utils/server-scope"
 import { normalizeSessionInfo } from "@/utils/session"
 import type { ServerProtocol } from "@/utils/server-protocol"
 import type { ServerApi } from "@/utils/server"
+import { QUERY_CACHE_WINDOW_MS } from "../query-cache"
 
 type GlobalStore = {
   ready: boolean
@@ -108,6 +109,7 @@ function showErrors(input: {
 export const loadGlobalConfigQuery = (scope: ServerScope, sdk: OpencodeClient, protocol?: Promise<ServerProtocol>) =>
   queryOptions({
     queryKey: [scope, "config"],
+    staleTime: QUERY_CACHE_WINDOW_MS,
     queryFn: async () => {
       if ((await protocol) !== "v1") return {}
       return retry(() => sdk.global.config.get().then((x) => x.data!))
@@ -127,6 +129,7 @@ type VcsApi = ServerApi["vcs"]
 export const loadProjectsQuery = (scope: ServerScope, api: ProjectApi) =>
   queryOptions({
     queryKey: [scope, "project"],
+    staleTime: QUERY_CACHE_WINDOW_MS,
     queryFn: () =>
       retry(() =>
         api.list().then((projects) => {
@@ -227,6 +230,7 @@ export const loadProvidersQuery = (
 ) =>
   queryOptions({
     queryKey: [scope, directory, "providers"],
+    staleTime: QUERY_CACHE_WINDOW_MS,
     queryFn: () =>
       retry(async () => {
         if ((await protocol) === "v1" && legacy) {
@@ -264,6 +268,7 @@ export const loadAgentsQuery = (
 ) =>
   queryOptions({
     queryKey: [scope, directory, "agents"],
+    staleTime: QUERY_CACHE_WINDOW_MS,
     queryFn: () =>
       retry(async () => {
         if ((await protocol) === "v1" && legacy) return normalizeAgentList((await legacy.app.agents()).data ?? [])
@@ -303,6 +308,7 @@ export const loadPathQuery = (
 ) =>
   queryOptions<Path>({
     queryKey: [scope, directory, "path"],
+    staleTime: QUERY_CACHE_WINDOW_MS,
     queryFn: async () => {
       if ((await protocol) !== "v1")
         return { state: "", config: "", worktree: "", directory: directory ?? "", home: "" }
@@ -319,6 +325,7 @@ export const loadReferencesQuery = (
 ) =>
   queryOptions<ReferenceInfo[]>({
     queryKey: [scope, directory, "references"] as const,
+    staleTime: QUERY_CACHE_WINDOW_MS,
     queryFn: () =>
       retry(async () => {
         if ((await protocol) === "v1" && legacy) return (await legacy.v2.reference.list()).data?.data ?? []

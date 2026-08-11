@@ -14,6 +14,7 @@ import { loadActiveSessionsQuery, loadMcpQuery, loadMcpResourcesQuery, seedActiv
 import { ServerScope } from "@/utils/server-scope"
 import { createServerSession } from "./server-session"
 import type { ServerApi } from "@/utils/server"
+import { QUERY_CACHE_WINDOW_MS } from "./query-cache"
 
 type McpApi = ServerApi["mcp"]
 
@@ -62,6 +63,7 @@ describe("MCP queries", () => {
 
     expect(calls).toEqual([{ location: { directory: "/project" } }])
     expect(result).toEqual({ "docs:docs://guide": { server: "docs", name: "Guide", uri: "docs://guide" } })
+    expect(loadMcpResourcesQuery(ServerScope.local, "/project", {} as McpApi).staleTime).toBe(QUERY_CACHE_WINDOW_MS)
   })
 })
 
