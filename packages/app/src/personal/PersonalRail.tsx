@@ -1,15 +1,19 @@
+import { ContextMenu } from "@opencode-ai/ui/context-menu"
 import { DropdownMenu } from "@opencode-ai/ui/dropdown-menu"
 import { IconButtonV2 } from "@opencode-ai/ui/v2/icon-button-v2"
 import { Icon } from "@opencode-ai/ui/v2/icon"
 import { TooltipV2 } from "@opencode-ai/ui/v2/tooltip-v2"
-import { For, Show, createSignal } from "solid-js"
+import { For, Show, createMemo, createSignal } from "solid-js"
+import { createStore } from "solid-js/store"
 import { useLanguage } from "@/context/language"
+import { Persist, persisted } from "@/utils/persist"
 import type {
   PersonalAttentionItem,
   PersonalProjectGroup,
   PersonalSessionItem,
   PersonalSessionState,
 } from "./projection"
+import { personalFlatSessionOrder as orderSessions } from "./projection"
 
 export function PersonalRail(props: {
   id: string
@@ -31,6 +35,19 @@ export function PersonalRail(props: {
 }) {
   const language = useLanguage()
   const [renaming, setRenaming] = createSignal<string>()
+  const [preferences, setPreferences] = persisted(
+    Persist.global("personal.navigation"),
+    createStore({ mode: "grouped" as "grouped" | "flat", order: "last-active" as "last-active" | "a-z" }),
+  )
+  const mode = () => (preferences.mode === "flat" ? "flat" : "grouped")
+  const order = () => (preferences.order === "a-z" ? "a-z" : "last-active")
+  const flatSessions = createMemo(() =>
+    orderSessions(
+      props.groups.flatMap((group) => group.sessions),
+      order(),
+      language.intl(),
+    ),
+  )
   const stateLabel = (state: PersonalSessionState) => language.t(`personal.state.${state}`)
   return (
     <div class="personal-rail-content" data-personal-rail-content>
@@ -56,6 +73,37 @@ export function PersonalRail(props: {
             onKeyDown={props.onMoveFocus}
           />
         </label>
+        <div class="personal-navigation-controls" role="group" aria-label={language.t("personal.navigation.mode")}>
+          <button
+            type="button"
+            class="personal-navigation-mode"
+            data-active={mode() === "grouped" ? "true" : undefined}
+            aria-pressed={mode() === "grouped"}
+            onClick={() => setPreferences("mode", "grouped")}
+          >
+            {language.t("personal.navigation.grouped")}
+          </button>
+          <button
+            type="button"
+            class="personal-navigation-mode"
+            data-active={mode() === "flat" ? "true" : undefined}
+            aria-pressed={mode() === "flat"}
+            onClick={() => setPreferences("mode", "flat")}
+          >
+            {language.t("personal.navigation.flat")}
+          </button>
+          <Show when={mode() === "flat"}>
+            <select
+              class="personal-navigation-order"
+              aria-label={language.t("personal.navigation.order")}
+              value={order()}
+              onChange={(event) => setPreferences("order", event.currentTarget.value as "last-active" | "a-z")}
+            >
+              <option value="last-active">{language.t("personal.navigation.lastActive")}</option>
+              <option value="a-z">{language.t("personal.navigation.az")}</option>
+            </select>
+          </Show>
+        </div>
       </div>
 
       <div class="personal-session-scroll">
@@ -79,64 +127,88 @@ export function PersonalRail(props: {
         </Show>
 
         <Show when={props.groups.length > 0} fallback={<EmptyState state={props.dataState} search={props.search} />}>
-          <For each={props.groups}>
-            {(group) => (
-              <section class="personal-project-group">
-                <div class="personal-project-heading">
-                  <button
-                    class="personal-project-toggle"
-                    type="button"
-                    title={group.directory}
-                    aria-expanded={group.expanded}
-                    onClick={() => props.onToggleProject(group)}
-                  >
-                    <Icon name="chevron-down" size="small" />
-                    <Icon name="folder" size="small" />
-                    <span>{group.name}</span>
-                    <small>{group.sessions.length}</small>
-                  </button>
-                  <TooltipV2 placement="right" value={language.t("command.session.new")}>
-                    <IconButtonV2
-                      type="button"
-                      size="small"
-                      variant="ghost-muted"
-                      class="personal-project-new"
-                      icon={<Icon name="plus" />}
-                      aria-label={language.t("command.session.new")}
-                      onClick={() => props.onNewDraft(group)}
+          <Show when={mode() === "flat"}>
+            <section class="personal-flat-group">
+              <div class="personal-session-list">
+                <For each={flatSessions()}>
+                  {(item) => (
+                    <SessionRow
+                      item={item}
+                      editing={renaming() === item.key}
+                      stateLabel={stateLabel(item.state)}
+                      onOpen={() => props.onOpen(item)}
+                      onMoveFocus={props.onMoveFocus}
+                      onEdit={() => setRenaming(item.key)}
+                      onEditEnd={() => setRenaming(undefined)}
+                      onRename={(title) => props.onRename(item, title)}
+                      onClose={() => props.onClose(item)}
+                      onArchive={() => props.onArchive(item)}
                     />
-                  </TooltipV2>
-                </div>
-                <Show when={group.expanded || props.search.length > 0}>
-                  <div class="personal-session-list">
-                    <For each={group.sessions}>
-                      {(item) => (
-                        <SessionRow
-                          item={item}
-                          editing={renaming() === item.key}
-                          stateLabel={stateLabel(item.state)}
-                          onOpen={() => props.onOpen(item)}
-                          onMoveFocus={props.onMoveFocus}
-                          onEdit={() => setRenaming(item.key)}
-                          onEditEnd={() => setRenaming(undefined)}
-                          onRename={(title) => props.onRename(item, title)}
-                          onClose={() => props.onClose(item)}
-                          onArchive={() => props.onArchive(item)}
-                        />
-                      )}
-                    </For>
-                    <Show when={group.dataState !== "complete"}>
-                      <p class="personal-project-state">
-                        {group.dataState === "loading"
-                          ? language.t("personal.project.loading")
-                          : language.t("personal.project.partial")}
-                      </p>
-                    </Show>
+                  )}
+                </For>
+              </div>
+            </section>
+          </Show>
+          <Show when={mode() === "grouped"}>
+            <For each={props.groups}>
+              {(group) => (
+                <section class="personal-project-group">
+                  <div class="personal-project-heading">
+                    <button
+                      class="personal-project-toggle"
+                      type="button"
+                      title={group.directory}
+                      aria-expanded={group.expanded}
+                      onClick={() => props.onToggleProject(group)}
+                    >
+                      <Icon name="chevron-down" size="small" />
+                      <Icon name="folder" size="small" />
+                      <span>{group.name}</span>
+                      <small>{group.sessions.length}</small>
+                    </button>
+                    <TooltipV2 placement="right" value={language.t("command.session.new")}>
+                      <IconButtonV2
+                        type="button"
+                        size="small"
+                        variant="ghost-muted"
+                        class="personal-project-new"
+                        icon={<Icon name="plus" />}
+                        aria-label={language.t("command.session.new")}
+                        onClick={() => props.onNewDraft(group)}
+                      />
+                    </TooltipV2>
                   </div>
-                </Show>
-              </section>
-            )}
-          </For>
+                  <Show when={group.expanded || props.search.length > 0}>
+                    <div class="personal-session-list">
+                      <For each={group.sessions}>
+                        {(item) => (
+                          <SessionRow
+                            item={item}
+                            editing={renaming() === item.key}
+                            stateLabel={stateLabel(item.state)}
+                            onOpen={() => props.onOpen(item)}
+                            onMoveFocus={props.onMoveFocus}
+                            onEdit={() => setRenaming(item.key)}
+                            onEditEnd={() => setRenaming(undefined)}
+                            onRename={(title) => props.onRename(item, title)}
+                            onClose={() => props.onClose(item)}
+                            onArchive={() => props.onArchive(item)}
+                          />
+                        )}
+                      </For>
+                      <Show when={group.dataState !== "complete"}>
+                        <p class="personal-project-state">
+                          {group.dataState === "loading"
+                            ? language.t("personal.project.loading")
+                            : language.t("personal.project.partial")}
+                        </p>
+                      </Show>
+                    </div>
+                  </Show>
+                </section>
+              )}
+            </For>
+          </Show>
           <Show when={props.dataState === "partial"}>
             <p class="personal-data-note">{language.t("personal.partial")}</p>
           </Show>
@@ -200,59 +272,105 @@ function SessionRow(props: {
     else requestAnimationFrame(() => input?.focus())
   }
   return (
-    <div class="personal-session-row" data-active={props.item.active ? "true" : undefined}>
-      <Show
-        when={!props.editing}
-        fallback={
-          <div class="personal-session-editor">
-            <span class="personal-session-state" data-state={props.item.state} aria-hidden="true" />
-            <input
-              ref={input}
-              value={props.item.title}
-              aria-label={language.t("common.rename")}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void closeEdit(true)
-                if (event.key === "Escape") void closeEdit(false)
-              }}
-              onBlur={() => void closeEdit(true)}
-            />
-          </div>
-        }
+    <ContextMenu>
+      <ContextMenu.Trigger
+        as="div"
+        class="personal-session-row"
+        data-active={props.item.active ? "true" : undefined}
+        onContextMenu={(event) => event.stopPropagation()}
       >
-        <button
-          class="personal-session-button"
-          type="button"
-          aria-current={props.item.active ? "page" : undefined}
-          title={`${props.item.title} · ${props.stateLabel}`}
-          onClick={(event) => {
-            if (event.detail > 1) return
-            props.onOpen()
-          }}
-          onMouseDown={(event) => {
-            if (event.detail !== 2) return
-            event.preventDefault()
-            event.stopPropagation()
-            openEdit()
-          }}
-          onDblClick={(event) => {
-            event.preventDefault()
-            event.stopPropagation()
-            openEdit()
-          }}
-          onKeyDown={props.onMoveFocus}
+        <Show
+          when={!props.editing}
+          fallback={
+            <div class="personal-session-editor">
+              <span class="personal-session-state" data-state={props.item.state} aria-hidden="true" />
+              <input
+                ref={input}
+                value={props.item.title}
+                aria-label={language.t("common.rename")}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void closeEdit(true)
+                  if (event.key === "Escape") void closeEdit(false)
+                }}
+                onBlur={() => void closeEdit(true)}
+              />
+            </div>
+          }
         >
-          <span class="personal-session-state" data-state={props.item.state} aria-hidden="true" />
-          <span>{props.item.title}</span>
-          <small>{props.stateLabel}</small>
-        </button>
+          <button
+            class="personal-session-button"
+            type="button"
+            aria-current={props.item.active ? "page" : undefined}
+            title={`${props.item.title} · ${props.stateLabel}`}
+            onClick={(event) => {
+              if (event.detail > 1) return
+              props.onOpen()
+            }}
+            onMouseDown={(event) => {
+              if (event.detail !== 2) return
+              event.preventDefault()
+              event.stopPropagation()
+              openEdit()
+            }}
+            onDblClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              openEdit()
+            }}
+            onKeyDown={props.onMoveFocus}
+          >
+            <span class="personal-session-state" data-state={props.item.state} aria-hidden="true" />
+            <span>{props.item.title}</span>
+            <small>{props.stateLabel}</small>
+          </button>
+        </Show>
+        <SessionMenu
+          item={props.item}
+          onRename={() => openEdit(true)}
+          onClose={props.onClose}
+          onArchive={props.onArchive}
+        />
+      </ContextMenu.Trigger>
+      <ContextMenu.Portal>
+        <ContextMenu.Content>
+          <SessionActions
+            item={props.item}
+            onRename={() => openEdit(true)}
+            onClose={props.onClose}
+            onArchive={props.onArchive}
+          />
+        </ContextMenu.Content>
+      </ContextMenu.Portal>
+    </ContextMenu>
+  )
+}
+
+function SessionActions(props: {
+  item: PersonalSessionItem
+  onRename: () => void
+  onClose: () => void
+  onArchive: () => void
+}) {
+  const language = useLanguage()
+  return (
+    <>
+      <Show when={props.item.open}>
+        <ContextMenu.Item onSelect={props.onRename}>
+          <Icon name="edit" size="small" />
+          <ContextMenu.ItemLabel>{language.t("common.rename")}</ContextMenu.ItemLabel>
+        </ContextMenu.Item>
+        <ContextMenu.Item onSelect={props.onClose}>
+          <Icon name="xmark-small" size="small" />
+          <ContextMenu.ItemLabel>{language.t("command.tab.close")}</ContextMenu.ItemLabel>
+        </ContextMenu.Item>
       </Show>
-      <SessionMenu
-        item={props.item}
-        onRename={() => openEdit(true)}
-        onClose={props.onClose}
-        onArchive={props.onArchive}
-      />
-    </div>
+      <Show when={props.item.sessionId}>
+        <ContextMenu.Item onSelect={props.onArchive}>
+          <Icon name="archive" size="small" />
+          <ContextMenu.ItemLabel>{language.t("command.session.archive")}</ContextMenu.ItemLabel>
+        </ContextMenu.Item>
+      </Show>
+    </>
   )
 }
 

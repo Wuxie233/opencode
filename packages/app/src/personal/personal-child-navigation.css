@@ -1,0 +1,172 @@
+[data-personal-child-navigation] {
+  --personal-child-border: var(--v2-border-border-muted);
+  --personal-child-hover: var(--v2-overlay-simple-overlay-hover);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--v2-text-text-base);
+  background: var(--v2-background-bg-deep);
+}
+
+[data-personal-child-navigation][data-presentation="rail"] {
+  width: 280px;
+  border-left: 1px solid var(--personal-child-border);
+}
+
+[data-personal-child-navigation][data-presentation="drawer"] {
+  width: min(360px, 88vw);
+  max-width: 100%;
+}
+
+[data-personal-child-navigation] button {
+  letter-spacing: 0;
+}
+
+[data-personal-child-navigation] .personal-child-header {
+  display: grid;
+  gap: 10px;
+  padding: 14px 12px 12px;
+  border-bottom: 1px solid var(--personal-child-border);
+}
+
+[data-personal-child-navigation] .personal-child-header div,
+[data-personal-child-navigation] .personal-child-copy {
+  min-width: 0;
+}
+
+[data-personal-child-navigation] .personal-child-header h2 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+}
+
+[data-personal-child-navigation] .personal-child-header p {
+  margin: 1px 0 0;
+  overflow: hidden;
+  color: var(--v2-text-text-muted);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-personal-child-navigation] .personal-child-return,
+[data-personal-child-navigation] .personal-child-row {
+  min-width: 0;
+  border: 0;
+  color: var(--v2-text-text-muted);
+  background: transparent;
+  cursor: default;
+  text-align: left;
+}
+
+[data-personal-child-navigation] .personal-child-return {
+  width: fit-content;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+[data-personal-child-navigation] .personal-child-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+  scrollbar-gutter: stable;
+}
+
+[data-personal-child-navigation] .personal-child-row {
+  width: 100%;
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+[data-personal-child-navigation] .personal-child-return:hover,
+[data-personal-child-navigation] .personal-child-row:hover,
+[data-personal-child-navigation] .personal-child-row[data-selected="true"] {
+  color: var(--v2-text-text-base);
+  background: var(--personal-child-hover);
+}
+
+[data-personal-child-navigation] .personal-child-return:focus-visible,
+[data-personal-child-navigation] .personal-child-row:focus-visible {
+  outline: 2px solid var(--v2-border-border-focus);
+  outline-offset: -2px;
+}
+
+[data-personal-child-navigation] .personal-child-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--v2-icon-icon-muted);
+}
+
+[data-personal-child-navigation] .personal-child-row[data-state="busy"] .personal-child-indicator,
+[data-personal-child-navigation] .personal-child-row[data-state="retry"] .personal-child-indicator {
+  background: var(--v2-state-fg-info);
+}
+
+[data-personal-child-navigation] .personal-child-row[data-state="question"] .personal-child-indicator,
+[data-personal-child-navigation] .personal-child-row[data-state="permission"] .personal-child-indicator {
+  background: var(--v2-state-fg-warning);
+}
+
+[data-personal-child-navigation] .personal-child-row[data-state="error"] .personal-child-indicator {
+  background: var(--v2-state-fg-danger);
+}
+
+[data-personal-child-navigation] .personal-child-copy {
+  display: grid;
+  gap: 1px;
+}
+
+[data-personal-child-navigation] .personal-child-copy strong,
+[data-personal-child-navigation] .personal-child-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+[data-personal-child-navigation] .personal-child-next {
+  transform: rotate(-90deg);
+}
+
+[data-personal-child-navigation] .personal-child-copy strong {
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 520;
+}
+
+[data-personal-child-navigation] .personal-child-copy small,
+[data-personal-child-navigation] .personal-child-state {
+  color: var(--v2-text-text-muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+[data-personal-child-navigation] .personal-child-state {
+  margin: 0;
+  padding: 20px 12px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  [data-personal-child-navigation] .personal-child-return,
+  [data-personal-child-navigation] .personal-child-row {
+    transition:
+      color 120ms ease,
+      background-color 120ms ease;
+  }
+}

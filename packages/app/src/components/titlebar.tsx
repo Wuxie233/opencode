@@ -5,6 +5,7 @@ import {
   createSignal,
   Match,
   on,
+  onCleanup,
   onMount,
   Show,
   Switch,
@@ -39,6 +40,7 @@ import type { PromptSession } from "@/context/prompt"
 import "./titlebar.css"
 import { newTabTooltipKeybind } from "./command-tooltip-keybind"
 import { normalizeSessionInfo } from "@/utils/session"
+import { titlebarRouteTitle } from "./titlebar-personal"
 
 const legacyTitlebarHeight = 40
 const v2TitlebarHeight = 36
@@ -74,6 +76,7 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
   const useV2Titlebar = createMemo(() => settings.general.newLayoutDesigns())
   const mobile = createMediaQuery("(max-width: 767px)")
   const personalCompact = createMediaQuery("(max-width: 1079px)")
+  const [personalShell, setPersonalShell] = createSignal(false)
   const bottom = createMemo(() => useV2Titlebar() && mobile() && settings.general.mobileTitlebarPosition() === "bottom")
 
   const mac = createMemo(() => platform.platform === "desktop" && platform.os === "macos")
@@ -137,6 +140,14 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
   const v2RightState = createMemo<TitlebarV2RightState>(() => ({
     update: updateState(),
   }))
+
+  onMount(() => {
+    const update = () => setPersonalShell(!!document.querySelector("[data-personal-ui]"))
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { childList: true, subtree: true })
+    onCleanup(() => observer.disconnect())
+  })
 
   const back = () => {
     const next = backPath(history)
@@ -238,6 +249,14 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
             }
 
             const currentTab = () => matchRoute(layout.route())
+            const personalTitle = createMemo(() => {
+              const tab = currentTab()
+              return titlebarRouteTitle(layout.route(), session()?.title ?? (tab ? tabs.info[tabKey(tab)]?.title : undefined), {
+                home: language.t("home.title"),
+                newSession: language.t("command.session.new"),
+                unknown: language.t("session.tab.unknown"),
+              })
+            })
 
             createEffect(() => {
               const route = layout.route()
@@ -414,21 +433,31 @@ export function Titlebar(props: { update?: TitlebarUpdate; debugTools?: { visibl
                   />
                 </TooltipV2>
 
-                <TitlebarTabStrip
-                  tabs={tabsStore}
-                  currentTab={currentTab}
-                  forceTruncate={tabsAreOverflowing()}
-                  onOverflowChange={setTabsAreOverflowing}
-                  onNavigate={(tab, el) => {
-                    tabs.select(tab)
-                    el?.scrollIntoView({ behavior: "instant" })
-                  }}
-                  onClose={(tab) => {
-                    const index = tabsStore.findIndex((item) => tabKey(item) === tabKey(tab))
-                    if (index !== -1) tabsStoreActions.closeTab(index)
-                  }}
-                  onReorder={(keys) => tabsStoreActions.reorder(keys)}
-                />
+                <div class="min-w-0 flex-1" classList={{ hidden: personalShell() }}>
+                  <TitlebarTabStrip
+                    tabs={tabsStore}
+                    currentTab={currentTab}
+                    forceTruncate={tabsAreOverflowing()}
+                    onOverflowChange={setTabsAreOverflowing}
+                    onNavigate={(tab, el) => {
+                      tabs.select(tab)
+                      el?.scrollIntoView({ behavior: "instant" })
+                    }}
+                    onClose={(tab) => {
+                      const index = tabsStore.findIndex((item) => tabKey(item) === tabKey(tab))
+                      if (index !== -1) tabsStoreActions.closeTab(index)
+                    }}
+                    onReorder={(keys) => tabsStoreActions.reorder(keys)}
+                  />
+                </div>
+                <div
+                  data-titlebar-personal-title
+                  class="min-w-0 flex-1 truncate px-1.5 text-[13px] font-medium text-v2-text-text-base"
+                  classList={{ hidden: !personalShell() }}
+                  aria-live="polite"
+                >
+                  {personalTitle()}
+                </div>
                 <TooltipV2
                   placement="bottom"
                   value={

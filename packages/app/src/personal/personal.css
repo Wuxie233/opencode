@@ -11,7 +11,7 @@
 
 [data-personal-ui].personal-shell {
   display: grid;
-  grid-template-columns: var(--personal-rail-width) minmax(0, 1fr);
+  grid-template-columns: var(--personal-rail-width) minmax(0, 1fr) 280px;
   overflow: hidden;
   background: var(--v2-background-bg-deep);
 }
@@ -104,6 +104,44 @@
 
 [data-personal-ui] .personal-search input::placeholder {
   color: var(--v2-text-text-faint);
+}
+
+[data-personal-ui] .personal-navigation-controls {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 4px;
+}
+
+[data-personal-ui] .personal-navigation-mode,
+[data-personal-ui] .personal-navigation-order {
+  min-width: 0;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--v2-text-text-faint);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+}
+
+[data-personal-ui] .personal-navigation-mode:hover,
+[data-personal-ui] .personal-navigation-mode[data-active="true"] {
+  color: var(--v2-text-text-base);
+  background: var(--personal-hover);
+}
+
+[data-personal-ui] .personal-navigation-mode:focus-visible,
+[data-personal-ui] .personal-navigation-order:focus-visible {
+  outline: 2px solid var(--v2-border-border-focus);
+  outline-offset: -2px;
+}
+
+[data-personal-ui] .personal-navigation-order {
+  padding: 0 3px;
+  border-color: var(--personal-border);
+  color: var(--v2-text-text-muted);
+  background: var(--v2-background-bg-base);
 }
 
 [data-personal-ui] .personal-home-button:hover,
@@ -350,6 +388,10 @@
   opacity: 1;
 }
 
+[data-personal-ui] .personal-flat-group {
+  min-width: 0;
+}
+
 [data-personal-ui] .personal-project-state,
 [data-personal-ui] .personal-data-note,
 [data-personal-ui] .personal-empty {
@@ -387,6 +429,23 @@
   display: flex;
   flex-direction: column;
   position: relative;
+}
+
+[data-personal-ui] .personal-child-rail {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid var(--personal-border);
+}
+
+[data-personal-ui] .personal-child-drawer {
+  right: 6px;
+  left: auto;
+  width: min(360px, calc(100vw - 12px));
+  max-width: calc(100vw - 12px);
+  overflow: hidden;
+  border: 1px solid var(--personal-border);
+  background: var(--personal-layer);
 }
 
 [data-personal-ui] .personal-route-loading {
@@ -430,6 +489,10 @@
   }
 
   [data-personal-ui] .personal-rail {
+    display: none;
+  }
+
+  [data-personal-ui] .personal-child-rail {
     display: none;
   }
 

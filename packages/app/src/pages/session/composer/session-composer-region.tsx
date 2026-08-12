@@ -60,104 +60,112 @@ export function SessionComposerRegion(props: {
         </Show>
 
         <Show when={controller.showComposer()}>
-          <Show when={controller.dock()}>
-            <div
-              classList={{
-                "overflow-hidden": true,
-                "pointer-events-none": controller.dockProgress() < 0.98,
-              }}
-              style={{
-                "max-height": `${controller.dockHeight() * controller.dockProgress()}px`,
-              }}
-            >
-              <div ref={controller.setDockBodyRef}>
-                <SessionTodoDock
-                  todos={controller.state.todos()}
-                  collapsed={controller.todo.collapsed()}
-                  onToggle={controller.todo.onToggle}
-                  collapseLabel={language.t("session.todo.collapse")}
-                  expandLabel={language.t("session.todo.expand")}
-                  dockProgress={controller.dockProgress()}
-                />
-              </div>
-            </div>
-          </Show>
-          <Show
-            when={controller.promptReady()}
-            fallback={
-              <>
-                <Show when={rolled()} keyed>
-                  {(revert) => (
-                    <div class="pb-2">
-                      <SessionRevertDock
-                        items={revert.items}
-                        restoring={revert.restoring}
-                        disabled={revert.disabled}
-                        onRestore={revert.onRestore}
-                      />
-                    </div>
-                  )}
-                </Show>
-                <div
-                  class="w-full min-h-32 md:min-h-40 rounded-md border border-border-weak-base bg-background-base/50 px-4 py-3 text-text-weak whitespace-pre-wrap pointer-events-none"
-                  style={{ "margin-top": `${-36 * controller.dockProgress()}px` }}
-                >
-                  {controller.handoffPrompt() || language.t("prompt.loading")}
-                </div>
-              </>
-            }
-          >
-            <Show when={rolled()} keyed>
-              {(revert) => (
-                <div
-                  style={{
-                    "margin-top": `${-36 * controller.dockProgress()}px`,
-                  }}
-                >
-                  <SessionRevertDock
-                    items={revert.items}
-                    restoring={revert.restoring}
-                    disabled={revert.disabled}
-                    onRestore={revert.onRestore}
+          <Show when={!controller.observation()}>
+            <Show when={controller.dock()}>
+              <div
+                classList={{
+                  "overflow-hidden": true,
+                  "pointer-events-none": controller.dockProgress() < 0.98,
+                }}
+                style={{
+                  "max-height": `${controller.dockHeight() * controller.dockProgress()}px`,
+                }}
+              >
+                <div ref={controller.setDockBodyRef}>
+                  <SessionTodoDock
+                    todos={controller.state.todos()}
+                    collapsed={controller.todo.collapsed()}
+                    onToggle={controller.todo.onToggle}
+                    collapseLabel={language.t("session.todo.collapse")}
+                    expandLabel={language.t("session.todo.expand")}
+                    dockProgress={controller.dockProgress()}
                   />
                 </div>
-              )}
+              </div>
             </Show>
-            <div
-              classList={{
-                "relative z-[70]": true,
-              }}
-              style={{
-                "margin-top": `${-controller.lift()}px`,
-              }}
-            >
-              <Show when={controller.followup()?.items.length}>
-                <SessionFollowupDock
-                  items={controller.followup()!.items}
-                  sending={controller.followup()!.sending}
-                  onSend={controller.followup()!.onSend}
-                  onEdit={controller.followup()!.onEdit}
-                />
-              </Show>
-              <Show
-                when={controller.child()}
-                fallback={<Show when={!controller.state.blocked()}>{props.promptInput}</Show>}
-              >
-                <div
-                  ref={controller.setPromptRef}
-                  class="w-full rounded-[12px] border border-border-weak-base bg-background-base p-3 text-16-regular text-text-weak"
-                >
-                  <span>{language.t("session.child.promptDisabled")} </span>
-                  <Show when={controller.parentID()}>
-                    <button
-                      type="button"
-                      class="text-text-base transition-colors hover:text-text-strong"
-                      onClick={controller.openParent}
-                    >
-                      {language.t("session.child.backToParent")}
-                    </button>
+            <Show
+              when={controller.promptReady()}
+              fallback={
+                <>
+                  <Show when={rolled()} keyed>
+                    {(revert) => (
+                      <div class="pb-2">
+                        <SessionRevertDock
+                          items={revert.items}
+                          restoring={revert.restoring}
+                          disabled={revert.disabled}
+                          onRestore={revert.onRestore}
+                        />
+                      </div>
+                    )}
                   </Show>
-                </div>
+                  <div
+                    class="w-full min-h-32 md:min-h-40 rounded-md border border-border-weak-base bg-background-base/50 px-4 py-3 text-text-weak whitespace-pre-wrap pointer-events-none"
+                    style={{ "margin-top": `${-36 * controller.dockProgress()}px` }}
+                  >
+                    {controller.handoffPrompt() || language.t("prompt.loading")}
+                  </div>
+                </>
+              }
+            >
+              <Show when={rolled()} keyed>
+                {(revert) => (
+                  <div style={{ "margin-top": `${-36 * controller.dockProgress()}px` }}>
+                    <SessionRevertDock
+                      items={revert.items}
+                      restoring={revert.restoring}
+                      disabled={revert.disabled}
+                      onRestore={revert.onRestore}
+                    />
+                  </div>
+                )}
+              </Show>
+              <div class="relative z-[70]" style={{ "margin-top": `${-controller.lift()}px` }}>
+                <Show when={controller.followup()?.items.length}>
+                  <SessionFollowupDock
+                    items={controller.followup()!.items}
+                    sending={controller.followup()!.sending}
+                    onSend={controller.followup()!.onSend}
+                    onEdit={controller.followup()!.onEdit}
+                  />
+                </Show>
+                <Show
+                  when={controller.child()}
+                  fallback={<Show when={!controller.state.blocked()}>{props.promptInput}</Show>}
+                >
+                  <div
+                    ref={controller.setPromptRef}
+                    class="w-full rounded-[12px] border border-border-weak-base bg-background-base p-3 text-16-regular text-text-weak"
+                  >
+                    <span>{language.t("session.child.promptDisabled")} </span>
+                    <Show when={controller.parentID()}>
+                      <button
+                        type="button"
+                        class="text-text-base transition-colors hover:text-text-strong"
+                        onClick={controller.openParent}
+                      >
+                        {language.t("session.child.backToParent")}
+                      </button>
+                    </Show>
+                  </div>
+                </Show>
+              </div>
+            </Show>
+          </Show>
+          <Show when={controller.observation()}>
+            <div
+              ref={controller.setPromptRef}
+              class="w-full rounded-[12px] border border-border-weak-base bg-background-base p-3 text-16-regular text-text-weak"
+            >
+              <span>{language.t("session.child.promptDisabled")} </span>
+              <Show when={controller.parentID()}>
+                <button
+                  type="button"
+                  class="text-text-base transition-colors hover:text-text-strong"
+                  onClick={controller.openParent}
+                >
+                  {language.t("session.child.backToParent")}
+                </button>
               </Show>
             </div>
           </Show>

@@ -31,6 +31,9 @@ import {
   type PersonalSessionSource,
 } from "./projection"
 import { PersonalRail } from "./PersonalRail"
+import { PersonalChildNavigation } from "./PersonalChildNavigation"
+import { personalChildProjection, hydratePersonalChildren, type PersonalChildItem } from "./child-navigation"
+import { personalChildMessages, personalChildMessagesZh, personalChildMessagesZht } from "./child-navigation-i18n"
 import "./personal.css"
 
 const HISTORY_LIMIT = 64
@@ -46,6 +49,12 @@ export default function PersonalLayout(props: ParentProps) {
   const compact = createMediaQuery("(max-width: 1079px)")
   const [state, setState] = createStore({ search: "", cacheVersion: 0 })
   const [pendingRoute, setPendingRoute] = createSignal<{ server: string; sessionId: string }>()
+  const [childState, setChildState] = createStore<{
+    key?: string
+    status: "idle" | "loading" | "complete" | "error"
+    root?: Session
+    children: Session[]
+  }>({ status: "idle", children: [] })
 
   const reconcilePendingRoute = () => {
     const pending = pendingRoute()
@@ -64,6 +73,88 @@ export default function PersonalLayout(props: ParentProps) {
     if (route.server !== undefined && route.server !== pending.server) return
     setPendingRoute(undefined)
   })
+
+  function serverContext(key: string) {
+    const conn = global.servers.list().find((item) => ServerConnection.key(item) === key)
+    return conn ? global.ensureServerCtx(conn) : undefined
+  }
+
+  const activeChild = createMemo(() => {
+    const route = layout.route()
+    if (route.type !== "session" || !route.sessionId || route.server === undefined) return undefined
+    const ctx = serverContext(route.server)
+    const session = ctx?.sync.session.get(route.sessionId)
+    return ctx && session ? { route, ctx, session } : undefined
+  })
+
+  createEffect(() => {
+    const current = activeChild()
+    if (!current) {
+      setChildState({ key: undefined, status: "idle", root: undefined, children: [] })
+      return
+    }
+    const root = current.ctx.sync.session.lineage.peek(current.session.id)?.root ?? current.session
+    const key = `${current.route.server}\0${root.id}`
+    if (childState.key === key && childState.status !== "error") return
+    setChildState({ key, status: "loading", root, children: [] })
+    void hydratePersonalChildren({
+      root,
+      children: (input) => current.ctx.sdk.client.session.children(input),
+      remember: (item) => current.ctx.sync.session.remember(item),
+    })
+      .then((children) => setChildState({ key, status: "complete", root, children }))
+      .catch(() => setChildState({ key, status: "error", root, children: [] }))
+  })
+
+  const childProjection = createMemo(() => {
+    const root = childState.root
+    const current = activeChild()
+    if (!root || !current) return undefined
+    return personalChildProjection({
+      server: current.route.server!,
+      root,
+      sessions: childState.children,
+      selectedSessionID: current.route.sessionId,
+      status: Object.fromEntries(childState.children.map((item) => [item.id, current.ctx.sync.session.data.session_status[item.id]])),
+      questions: current.ctx.sync.session.data.question,
+      permissions: current.ctx.sync.session.data.permission,
+    })
+  })
+
+  const childCopy = createMemo(() => {
+    const source = language.locale() === "zh" ? personalChildMessagesZh : language.locale() === "zht" ? personalChildMessagesZht : personalChildMessages
+    return {
+      label: source["personal.children.label"],
+      title: source["personal.children.title"],
+      returnToRoot: source["personal.children.return"],
+      loading: source["personal.children.loading"],
+      error: source["personal.children.error"],
+      empty: source["personal.children.empty"],
+      state: {
+        question: language.t("personal.state.question"),
+        permission: language.t("personal.state.permission"),
+        error: language.t("personal.state.error"),
+        busy: language.t("personal.state.busy"),
+        retry: language.t("personal.state.retry"),
+        idle: language.t("personal.state.idle"),
+      },
+    }
+  })
+
+  function selectChild(child: PersonalChildItem) {
+    const tab = tabs.addSessionTab({ server: ServerConnection.Key.make(child.server), sessionId: child.sessionID })
+    setPendingRoute({ server: child.server, sessionId: child.sessionID })
+    tabs.selectEager(tab)
+  }
+
+  function returnToRoot() {
+    const root = childProjection()?.root
+    const current = activeChild()
+    if (!root || !current) return
+    const tab = tabs.addSessionTab({ server: ServerConnection.Key.make(current.route.server!), sessionId: root.id })
+    setPendingRoute({ server: current.route.server!, sessionId: root.id })
+    tabs.selectEager(tab)
+  }
 
   createEffect(() => {
     const cleanups = global.servers.list().map((conn) =>
@@ -240,11 +331,6 @@ export default function PersonalLayout(props: ParentProps) {
 
   const closeDrawer = () => layout.mobileSidebar.hide()
 
-  function serverContext(key: string) {
-    const conn = global.servers.list().find((item) => ServerConnection.key(item) === key)
-    return conn ? global.ensureServerCtx(conn) : undefined
-  }
-
   function openSession(item: PersonalSessionItem) {
     if (item.tab?.type === "draft") {
       tabs.select({ ...item.tab, server: ServerConnection.Key.make(item.tab.server) })
@@ -381,6 +467,24 @@ export default function PersonalLayout(props: ParentProps) {
           </Show>
         </div>
 
+        <Show when={childProjection()}>
+          {(child) => (
+            <aside class="personal-child-rail" aria-label={childCopy().label}>
+              <PersonalChildNavigation
+                id="personal-children-desktop"
+                presentation="rail"
+                rootTitle={child().root.title}
+                children={child().children}
+                selectedChild={child().selectedChild}
+                dataState={childState.status === "error" ? "error" : childState.status === "loading" ? "loading" : "complete"}
+                copy={childCopy()}
+                onReturnToRoot={returnToRoot}
+                onSelect={selectChild}
+              />
+            </aside>
+          )}
+        </Show>
+
         <Drawer
           open={compact() && layout.mobileSidebar.opened()}
           onOpenChange={(open) => {
@@ -405,6 +509,27 @@ export default function PersonalLayout(props: ParentProps) {
               icon={<Icon name="xmark-small" />}
             />
             {rail("personal-mobile")}
+          </DrawerContent>
+        </Drawer>
+
+        <Drawer open={compact() && !!childProjection() && childProjection()!.children.length > 0} side="right" onOpenChange={() => {}}>
+          <DrawerContent id="personal-children-drawer" data-personal-ui class="personal-child-drawer">
+            <DrawerTitle class="sr-only">{childCopy().label}</DrawerTitle>
+            <Show when={childProjection()}>
+              {(child) => (
+                <PersonalChildNavigation
+                  id="personal-children-mobile"
+                  presentation="drawer"
+                  rootTitle={child().root.title}
+                  children={child().children}
+                  selectedChild={child().selectedChild}
+                  dataState={childState.status === "error" ? "error" : childState.status === "loading" ? "loading" : "complete"}
+                  copy={childCopy()}
+                  onReturnToRoot={returnToRoot}
+                  onSelect={selectChild}
+                />
+              )}
+            </Show>
           </DrawerContent>
         </Drawer>
       </div>

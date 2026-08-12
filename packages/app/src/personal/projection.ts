@@ -103,12 +103,27 @@ export type PersonalProjection = {
   attention: PersonalAttentionItem[]
 }
 
+export type PersonalFlatOrder = "last-active" | "a-z"
+
 export function personalDirectorySessionKey(directory: string, sessionID: string) {
   return `${pathKey(directory)}\0${sessionID}`
 }
 
 export function personalIdentity(server: string, directory: string, sessionID: string) {
   return `${server}\0${personalDirectorySessionKey(directory, sessionID)}`
+}
+
+export function personalFlatSessionOrder<T extends Pick<PersonalSessionItem, "key" | "title" | "updated">>(
+  sessions: ReadonlyArray<T>,
+  order: PersonalFlatOrder,
+  locale: string,
+): T[] {
+  const collator = new Intl.Collator(locale, { sensitivity: "base", numeric: true })
+  return [...sessions].sort((a, b) => {
+    if (order === "last-active" && a.updated !== b.updated) return b.updated - a.updated
+    const title = collator.compare(a.title, b.title)
+    return title || a.key.localeCompare(b.key)
+  })
 }
 
 export function personalProjection(input: {
@@ -153,11 +168,7 @@ export function personalProjection(input: {
   return { state, projects, attention }
 }
 
-function projectServer(
-  server: PersonalServerSource,
-  tabs: ReadonlyArray<PersonalTabSource>,
-  route: PersonalRoute,
-) {
+function projectServer(server: PersonalServerSource, tabs: ReadonlyArray<PersonalTabSource>, route: PersonalRoute) {
   const sources = new Map(server.sessions.map((session) => [session.id, session] as const))
   const claimedTabs = new Set<string>()
   const projects = server.projects.map((project) => {
@@ -211,8 +222,10 @@ function makeProject(
   const sessionTabs = tabs.filter((item) => item.tab.type === "session")
   const rows = new Map<string, PersonalSessionItem>()
   const runtime = rootRuntimeStates(sessions, server.status)
+  const attention = rootAttention(sessions, server)
 
   for (const session of sessions) {
+    if (session.parentID) continue
     const tab = sessionTabs.find(
       (item) =>
         item.tab.type === "session" &&
@@ -220,20 +233,20 @@ function makeProject(
         (!item.directory || pathKey(item.directory) === pathKey(session.directory)),
     )
     const sessionKey = personalDirectorySessionKey(session.directory, session.id)
-    const questionCount = server.questions[sessionKey] ?? 0
-    const permissionCount = server.permissions[sessionKey] ?? 0
+    const signals = attention.get(sessionKey)
+    const questionCount = signals?.questionCount ?? 0
+    const permissionCount = signals?.permissionCount ?? 0
     const status = server.status[sessionKey]
     if (
-      session.parentID &&
       !tab &&
       questionCount === 0 &&
       permissionCount === 0 &&
       status !== "retry" &&
       status !== "busy" &&
-      !server.notifications[sessionKey]?.count
+      !signals?.notifications.count
     )
       continue
-    const item = sessionItem(server, project, session, tab, route, runtime.get(sessionKey))
+    const item = sessionItem(server, project, session, tab, route, runtime.get(sessionKey), signals)
     rows.set(item.key, item)
   }
 
@@ -248,6 +261,7 @@ function makeProject(
       (item) =>
         item.id === sessionTab.sessionId && (!tab.directory || pathKey(tab.directory) === pathKey(item.directory)),
     )
+    if (source?.parentID) continue
     if (source) continue
     const directory = tabDirectory(tab, new Map(server.sessions.map((session) => [session.id, session])))
     const item = sessionItem(
@@ -265,9 +279,7 @@ function makeProject(
     rows.set(item.key, item)
   }
 
-  const ordered = [...rows.values()].sort(
-    (a, b) => Number(b.open) - Number(a.open) || b.updated - a.updated,
-  )
+  const ordered = [...rows.values()].sort((a, b) => Number(b.open) - Number(a.open) || b.updated - a.updated)
   return {
     key: `${server.key}\0${pathKey(project.directory)}`,
     server: server.key,
@@ -288,12 +300,13 @@ function sessionItem(
   tab: PersonalTabSource | undefined,
   route: PersonalRoute,
   runtimeState?: "idle" | "retry" | "busy",
+  signals?: RootSignals,
 ): PersonalSessionItem {
   const sessionKey = personalDirectorySessionKey(source.directory, source.id)
-  const questionCount = server.questions[sessionKey] ?? 0
-  const permissionCount = server.permissions[sessionKey] ?? 0
+  const questionCount = signals?.questionCount ?? server.questions[sessionKey] ?? 0
+  const permissionCount = signals?.permissionCount ?? server.permissions[sessionKey] ?? 0
   const status = runtimeState ?? server.status[sessionKey]
-  const notifications = server.notifications[sessionKey]
+  const notifications = signals?.notifications ?? server.notifications[sessionKey] ?? { count: 0, hasError: false }
   const state =
     questionCount > 0
       ? "question"
@@ -306,15 +319,16 @@ function sessionItem(
             : project.dataState === "complete"
               ? "idle"
               : "unknown"
-  const attention = questionCount > 0
-    ? "question"
-    : permissionCount > 0
-      ? "permission"
-      : notifications?.hasError
-        ? "error"
-        : notifications?.count
-          ? "complete"
-          : undefined
+  const attention =
+    questionCount > 0
+      ? "question"
+      : permissionCount > 0
+        ? "permission"
+        : notifications?.hasError
+          ? "error"
+          : notifications?.count
+            ? "complete"
+            : undefined
   const directory = tab?.directory || source.directory
   return {
     key: personalIdentity(server.key, directory, source.id),
@@ -340,10 +354,49 @@ function sessionItem(
   }
 }
 
-function rootRuntimeStates(
-  sessions: ReadonlyArray<PersonalSessionSource>,
-  status: PersonalServerSource["status"],
-) {
+type RootSignals = {
+  questionCount: number
+  permissionCount: number
+  notifications: { count: number; hasError: boolean }
+}
+
+function rootAttention(sessions: ReadonlyArray<PersonalSessionSource>, server: PersonalServerSource) {
+  const byID = new Map(
+    sessions.map((session) => [personalDirectorySessionKey(session.directory, session.id), session] as const),
+  )
+  const roots = new Map<string, RootSignals>()
+  const root = (session: PersonalSessionSource) => {
+    const seen = new Set([session.id])
+    let current = session
+    while (current.parentID && !seen.has(current.parentID)) {
+      const parent = byID.get(personalDirectorySessionKey(session.directory, current.parentID))
+      if (!parent) break
+      seen.add(parent.id)
+      current = parent
+    }
+    return current
+  }
+
+  for (const session of sessions) {
+    const owner = root(session)
+    const key = personalDirectorySessionKey(owner.directory, owner.id)
+    const sessionKey = personalDirectorySessionKey(session.directory, session.id)
+    const notifications = server.notifications[sessionKey]
+    const current = roots.get(key) ?? {
+      questionCount: 0,
+      permissionCount: 0,
+      notifications: { count: 0, hasError: false },
+    }
+    current.questionCount += server.questions[sessionKey] ?? 0
+    current.permissionCount += server.permissions[sessionKey] ?? 0
+    current.notifications.count += notifications?.count ?? 0
+    current.notifications.hasError ||= notifications?.hasError ?? false
+    roots.set(key, current)
+  }
+  return roots
+}
+
+function rootRuntimeStates(sessions: ReadonlyArray<PersonalSessionSource>, status: PersonalServerSource["status"]) {
   const byID = new Map(
     sessions.map((session) => [personalDirectorySessionKey(session.directory, session.id), session] as const),
   )
@@ -396,7 +449,7 @@ function draftItem(
     tab: draft,
     tabKey: tab.key,
     title: tab.title || "New session",
-    updated: Number.MAX_SAFE_INTEGER,
+    updated: 0,
     active:
       route.type === "draft" &&
       route.draftID === draft.draftID &&

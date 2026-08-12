@@ -106,6 +106,7 @@ export function createSessionComposerRegionController(input: {
     const id = input.sessionID()
     return id ? sync().session.get(id)?.parentID : undefined
   })
+  const observation = createMemo(() => !!parentID())
   const open = createMemo(() => store.ready && input.state.dock() && !input.state.closing())
   const progress = useSpring(
     () => (open() ? 1 : 0),
@@ -130,8 +131,9 @@ export function createSessionComposerRegionController(input: {
     setPromptRef: input.setPromptRef,
     setDockRef: input.setDockRef,
     parentID,
-    child: () => !!parentID(),
-    showComposer: () => !input.state.blocked() || !!parentID(),
+    child: observation,
+    observation,
+    showComposer: () => !input.state.blocked() || observation(),
     handoffPrompt: () => getSessionHandoff(input.sessionKey())?.prompt,
     promptReady: () => input.prompt.ready() || promptReady(),
     dock: () => (store.ready && input.state.dock()) || value() > 0.001,

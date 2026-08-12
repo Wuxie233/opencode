@@ -1145,13 +1145,14 @@ export default function Page() {
     inputRef?.focus()
   }
 
-  useComposerCommands()
+  useComposerCommands({ observation: isChildSession })
   useSessionCommands({
     navigateMessageByOffset,
     setActiveMessage,
     focusInput,
     review: reviewTab,
     fileBrowser: () => newSessionDesign() && isDesktop() && !!params.id,
+    observation: isChildSession,
   })
   command.register("session-palette", () => [
     {
@@ -1928,7 +1929,7 @@ export default function Page() {
     download()
   }
 
-  const actions = { revert, openAttachment }
+  const actions = isChildSession() ? { openAttachment } : { revert, openAttachment }
 
   createEffect(() => {
     const sessionID = params.id

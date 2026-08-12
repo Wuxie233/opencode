@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   personalDirectorySessionKey,
+  personalFlatSessionOrder,
   personalIdentity,
   personalProjection,
   type PersonalServerSource,
@@ -34,6 +35,40 @@ function source(patch: Partial<PersonalServerSource> = {}): PersonalServerSource
 }
 
 describe("personalProjection", () => {
+  test("keeps only root sessions in the rail while aggregating descendant attention", () => {
+    const result = personalProjection({
+      servers: [
+        source({
+          sessions: [
+            { id: "root", directory: "/work/app", title: "Root", updated: 30 },
+            { id: "child", parentID: "root", directory: "/work/app", title: "Child", updated: 20 },
+          ],
+          questions: { [personalDirectorySessionKey("/work/app", "child")]: 2 },
+        }),
+      ],
+      tabs: [
+        { key: "root-tab", tab: { type: "session", server: serverA, sessionId: "root" }, directory: "/work/app" },
+        { key: "child-tab", tab: { type: "session", server: serverA, sessionId: "child" }, directory: "/work/app" },
+      ],
+      route: { type: "home" },
+    })
+
+    expect(result.projects.flatMap((project) => project.sessions.map((item) => item.sessionId))).toEqual([])
+    expect(result.attention).toHaveLength(1)
+    expect(result.attention[0]).toMatchObject({ kind: "question", session: { sessionId: "root", questionCount: 2 } })
+  })
+
+  test("sorts flat sessions by last activity or localized title", () => {
+    const sessions = [
+      { key: "z", title: "Zulu", updated: 10 },
+      { key: "a", title: "alpha", updated: 20 },
+      { key: "b", title: "Beta", updated: 20 },
+    ] as const
+
+    expect(personalFlatSessionOrder(sessions, "last-active", "en-US").map((item) => item.key)).toEqual(["a", "b", "z"])
+    expect(personalFlatSessionOrder(sessions, "a-z", "en-US").map((item) => item.key)).toEqual(["a", "b", "z"])
+  })
+
   test("keeps server and directory identity while preferring an open tab", () => {
     const tabs: PersonalTabSource[] = [
       {
@@ -92,8 +127,16 @@ describe("personalProjection", () => {
         }),
       ],
       tabs: [
-        { key: "alpha", tab: { type: "session" as const, server: serverA, sessionId: "ses_alpha" }, directory: "/work/app" },
-        { key: "beta", tab: { type: "session" as const, server: serverA, sessionId: "ses_beta" }, directory: "/work/app" },
+        {
+          key: "alpha",
+          tab: { type: "session" as const, server: serverA, sessionId: "ses_alpha" },
+          directory: "/work/app",
+        },
+        {
+          key: "beta",
+          tab: { type: "session" as const, server: serverA, sessionId: "ses_beta" },
+          directory: "/work/app",
+        },
       ],
     }
 
@@ -181,9 +224,7 @@ describe("personalProjection", () => {
           },
         }),
       ],
-      tabs: [
-        { key: "root-tab", tab: { type: "session", server: serverA, sessionId: "root" }, directory: "/work/app" },
-      ],
+      tabs: [{ key: "root-tab", tab: { type: "session", server: serverA, sessionId: "root" }, directory: "/work/app" }],
       route: { type: "home" },
     })
 
@@ -225,10 +266,12 @@ describe("personalProjection", () => {
       directory: session.directory,
     }))
     const result = personalProjection({
-      servers: [source({
-        sessions,
-        questions: { [personalDirectorySessionKey("/work/app", "ses_5")]: 1 },
-      })],
+      servers: [
+        source({
+          sessions,
+          questions: { [personalDirectorySessionKey("/work/app", "ses_5")]: 1 },
+        }),
+      ],
       tabs,
       route: { type: "home" },
     })

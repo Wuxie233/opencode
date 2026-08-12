@@ -19,6 +19,7 @@ import { UserMessage } from "@opencode-ai/sdk/v2"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionOwnership } from "./session-ownership"
 import { useLocal } from "@/context/local"
+import type { Accessor } from "solid-js"
 
 export type SessionCommandContext = {
   navigateMessageByOffset: (offset: number) => void
@@ -26,6 +27,7 @@ export type SessionCommandContext = {
   focusInput: () => void
   review?: () => boolean
   fileBrowser?: () => boolean
+  observation?: Accessor<boolean>
 }
 
 const withCategory = (category: string) => {
@@ -389,6 +391,7 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   }
 
   const shareCmds = () => {
+    if (actions.observation?.()) return []
     if (sync().data.config.share === "disabled") return []
     return [
       sessionCommand({
@@ -593,14 +596,14 @@ export const useSessionCommands = (actions: SessionCommandContext) => {
   ]
 
   command.register("session", () => [
-    ...sessionCmds(),
+    ...(actions.observation?.() ? [] : sessionCmds()),
     ...shareCmds(),
     ...fileCmds(),
-    ...contextCmds(),
+    ...(actions.observation?.() ? [] : contextCmds()),
     ...viewCmds(),
     ...terminalCmds(),
     ...messageCmds(),
-    ...mcpCmds(),
-    ...permissionsCmds(),
+    ...(actions.observation?.() ? [] : mcpCmds()),
+    ...(actions.observation?.() ? [] : permissionsCmds()),
   ])
 }

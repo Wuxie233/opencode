@@ -5,6 +5,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { getCursorPosition, setCursorPosition } from "@/components/prompt-input/editor-dom"
 import { useSessionLayout } from "./session-layout"
 import { createSessionOwnership } from "./session-ownership"
+import type { Accessor } from "solid-js"
 
 const withCategory = (category: string) => {
   return (option: Omit<CommandOption, "category">): CommandOption => ({
@@ -13,7 +14,7 @@ const withCategory = (category: string) => {
   })
 }
 
-export const useComposerCommands = (input: { model?: ModelSelection } = {}) => {
+export const useComposerCommands = (input: { model?: ModelSelection; observation?: Accessor<boolean> } = {}) => {
   const command = useCommand()
   const dialog = useDialog()
   const language = useLanguage()
@@ -46,38 +47,41 @@ export const useComposerCommands = (input: { model?: ModelSelection } = {}) => {
     })
   }
 
-  command.register("composer", () => [
-    modelCommand({
-      id: "model.choose",
-      title: language.t("command.model.choose"),
-      description: language.t("command.model.choose.description"),
-      keybind: "mod+'",
-      slash: "model",
-      onSelect: chooseModel,
-    }),
-    modelCommand({
-      id: "model.variant.cycle",
-      title: language.t("command.model.variant.cycle"),
-      description: language.t("command.model.variant.cycle.description"),
-      keybind: "shift+mod+d",
-      onSelect: () => model.variant.cycle(),
-    }),
-    agentCommand({
-      id: "agent.cycle",
-      title: language.t("command.agent.cycle"),
-      description: language.t("command.agent.cycle.description"),
-      keybind: "mod+.",
-      slash: "agent",
-      disabled: !local.agent.visible(),
-      onSelect: () => local.agent.move(1),
-    }),
-    agentCommand({
-      id: "agent.cycle.reverse",
-      title: language.t("command.agent.cycle.reverse"),
-      description: language.t("command.agent.cycle.reverse.description"),
-      keybind: "shift+mod+.",
-      disabled: !local.agent.visible(),
-      onSelect: () => local.agent.move(-1),
-    }),
-  ])
+  command.register("composer", () => {
+    if (input.observation?.()) return []
+    return [
+      modelCommand({
+        id: "model.choose",
+        title: language.t("command.model.choose"),
+        description: language.t("command.model.choose.description"),
+        keybind: "mod+'",
+        slash: "model",
+        onSelect: chooseModel,
+      }),
+      modelCommand({
+        id: "model.variant.cycle",
+        title: language.t("command.model.variant.cycle"),
+        description: language.t("command.model.variant.cycle.description"),
+        keybind: "shift+mod+d",
+        onSelect: () => model.variant.cycle(),
+      }),
+      agentCommand({
+        id: "agent.cycle",
+        title: language.t("command.agent.cycle"),
+        description: language.t("command.agent.cycle.description"),
+        keybind: "mod+.",
+        slash: "agent",
+        disabled: !local.agent.visible(),
+        onSelect: () => local.agent.move(1),
+      }),
+      agentCommand({
+        id: "agent.cycle.reverse",
+        title: language.t("command.agent.cycle.reverse"),
+        description: language.t("command.agent.cycle.reverse.description"),
+        keybind: "shift+mod+.",
+        disabled: !local.agent.visible(),
+        onSelect: () => local.agent.move(-1),
+      }),
+    ]
+  })
 }
